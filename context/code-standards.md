@@ -254,7 +254,8 @@ All environment variables defined in `.env.local` for development. Never hardcod
 | `NEXT_PUBLIC_APP_URL`           | actions/auth.ts — required HTTP(S) origin for OAuth `redirectTo` outside local development; a loopback `Host` fallback is allowed only in `NODE_ENV=development`. |
 | `BROWSERBASE_API_KEY`           | lib/browserbase.ts     |
 | `BROWSERBASE_PROJECT_ID`        | lib/browserbase.ts     |
-| `OPENAI_API_KEY`                | agent/ functions       |
+| `OPENAI_API_KEY`                | Not currently used — the project switched to Gemini for every AI feature (see architecture.md's Feature 08 decision, item 1); Features 10/13/17 (not yet built) will use it instead of GPT-4o when built |
+| `GEMINI_API_KEY`                | lib/gemini.ts — every AI feature project-wide (Feature 07 extraction, Feature 08 resume generation, and Features 10/13/17 when built) |
 | `ADZUNA_APP_ID`                 | lib/adzuna.ts          |
 | `ADZUNA_APP_KEY`                | lib/adzuna.ts          |
 | `NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN` | instrumentation-client.ts, lib/posthog-server.ts |
@@ -315,7 +316,7 @@ Approved dependencies for this project:
 - `@insforge/sdk` — InsForge client (SSR helpers via its `/ssr` and `/ssr/middleware` subpaths)
 - `@browserbasehq/sdk` — Browserbase sessions
 - `@browserbasehq/stagehand` — AI browser control
-- `openai` — GPT-4o API
+- `@google/genai` — Gemini API, this project's provider for every AI feature (Feature 07 extraction, Feature 08 resume generation, and Features 10/13/17 when built — see architecture.md's Feature 08 decision, item 1)
 - `posthog-js` — PostHog browser client
 - `posthog-node` — PostHog server client
 - `@react-pdf/renderer` — Resume PDF generation

@@ -60,10 +60,10 @@ Full width layout on all pages. No sidebar.
 - User fills profile form — all standard resume fields
 - User uploads their existing resume PDF
 - Two options on upload:
-  - "Extract from Resume" → GPT-4o parses resume and auto-fills profile form fields
+  - "Extract from Resume" → Gemini parses resume and auto-fills profile form fields (Feature 07 decision, `architecture.md`)
   - "Skip" → resume stored as-is, profile unchanged
 - User can manually edit any profile field at any time
-- User can generate a clean professional PDF resume from their current profile data using GPT-4o
+- User can generate a clean professional PDF resume from their current profile data using Gemini
 
 ### Finding Jobs — Adzuna Discovery
 
@@ -165,8 +165,8 @@ Full width layout on all pages. No sidebar.
 - InsForge authentication (Google + GitHub OAuth)
 - Redirect to dashboard after login
 - Profile form with all standard resume fields
-- Resume PDF upload with optional profile auto-fill via GPT-4o
-- Resume PDF generation from profile data using GPT-4o
+- Resume PDF upload with optional profile auto-fill via Gemini
+- Resume PDF generation from profile data using Gemini
 - Adzuna API job discovery — searches by title and location, category filtered to IT jobs
 - GPT-4o job matching with score, reason, matched skills, missing skills
 - Job details page with full structured description

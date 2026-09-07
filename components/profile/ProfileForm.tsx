@@ -2,16 +2,23 @@
 
 // 1. External imports
 import { useActionState, useState } from "react";
-import { Plus } from "lucide-react";
+import { FileText, Plus } from "lucide-react";
 
 // 2. Internal imports
-import { saveProfileAction, type SaveProfileState } from "@/actions/profile";
+import {
+  extractProfileFromResumeAction,
+  saveProfileAction,
+  type ExtractProfileState,
+  type SaveProfileState,
+} from "@/actions/profile";
 import { TextField } from "@/components/profile/TextField";
 import { SelectField } from "@/components/profile/SelectField";
 import { TagInput } from "@/components/profile/TagInput";
 import { WorkExperienceRoleCard } from "@/components/profile/WorkExperienceRoleCard";
+import { AcademicExperienceCard } from "@/components/profile/AcademicExperienceCard";
 import { ResumeUpload } from "@/components/profile/ResumeUpload";
-import type { ProfileFormData, WorkExperienceEntry } from "@/types";
+import { ResumePreview } from "@/components/profile/ResumePreview";
+import type { AcademicExperienceEntry, ProfileFormData, WorkExperienceEntry } from "@/types";
 
 // 3. Type definitions
 const WORK_AUTHORIZATION_OPTIONS = [
@@ -21,6 +28,7 @@ const WORK_AUTHORIZATION_OPTIONS = [
 ];
 
 const EXPERIENCE_LEVEL_OPTIONS = [
+  { value: "student", label: "Student" },
   { value: "junior", label: "Junior" },
   { value: "mid", label: "Mid" },
   { value: "senior", label: "Senior" },
@@ -44,20 +52,102 @@ const REMOTE_PREFERENCE_OPTIONS = [
 ];
 
 const MAX_WORK_EXPERIENCE_ROLES = 3;
+// Requested directly (not a numbered feature) — more headroom than Work
+// Experience's 3, since a student may reasonably have an award, an
+// exchange program, and undergraduate research all at once.
+const MAX_ACADEMIC_EXPERIENCE_ENTRIES = 5;
 
 const INITIAL_ACTION_STATE: SaveProfileState = { success: false };
+const INITIAL_EXTRACT_STATE: ExtractProfileState = { success: false };
 
 type Props = {
   initialProfile: ProfileFormData;
+  initialResumePdfUrl: string | null;
+  initialResumeStorageKey: string | null;
 };
 
 // 4. Component
-export function ProfileForm({ initialProfile }: Props) {
+export function ProfileForm({
+  initialProfile,
+  initialResumePdfUrl,
+  initialResumeStorageKey,
+}: Props) {
   const [profile, setProfile] = useState<ProfileFormData>(initialProfile);
   const [actionState, formAction, isPending] = useActionState(
     saveProfileAction,
     INITIAL_ACTION_STATE,
   );
+  const [extractState, extractFormAction, isExtracting] = useActionState(
+    extractProfileFromResumeAction,
+    INITIAL_EXTRACT_STATE,
+  );
+
+  // Route handler, not a Server Action — useActionState/formAction don't
+  // apply here (see architecture.md's Feature 08 decision, Decision 11).
+  // Seeded from initialResumePdfUrl so a prior generation still shows after
+  // a page reload, not just after a fresh generate-in-this-session.
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [generateError, setGenerateError] = useState<string | undefined>(undefined);
+  const [generatedResumeUrl, setGeneratedResumeUrl] = useState<string | null>(initialResumePdfUrl);
+  const [generatedResumeStorageKey, setGeneratedResumeStorageKey] = useState<string | null>(
+    initialResumeStorageKey,
+  );
+
+  const handleGenerate = async () => {
+    setIsGenerating(true);
+    setGenerateError(undefined);
+    try {
+      const response = await fetch("/api/resume/generate", { method: "POST" });
+      const result: {
+        success: boolean;
+        data?: { resumePdfUrl: string; resumeStorageKey: string };
+        error?: string;
+      } =
+        await response.json();
+      if (result.success && result.data) {
+        setGeneratedResumeUrl(result.data.resumePdfUrl);
+        setGeneratedResumeStorageKey(result.data.resumeStorageKey);
+      } else {
+        setGenerateError(result.error ?? "Something went wrong. Please try again.");
+      }
+    } catch (error) {
+      console.error("[ProfileForm]", error);
+      setGenerateError("Something went wrong. Please try again.");
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  // Merged during render, not in a useEffect: this project's lint config
+  // (react-hooks/set-state-in-effect) rejects setState-in-effect, so this
+  // follows React's own "adjusting state when a value changes" pattern
+  // instead — comparing extractState.data's identity against what was last
+  // merged, and calling setState conditionally during render. Same
+  // behavior architecture.md's Feature 07 decision (Decision 11) specifies:
+  // extractState.data's object identity changes each time a new extraction
+  // completes, which is what re-triggers the merge; every mapped field is
+  // unconditionally overwritten (Decision 6) — the user reviews everything
+  // before Save Profile, so nothing is destroyed silently.
+  const [mergedExtraction, setMergedExtraction] = useState(extractState.data);
+  if (extractState.data !== mergedExtraction) {
+    setMergedExtraction(extractState.data);
+    if (extractState.data) {
+      const extracted = extractState.data;
+      setProfile((current) => ({
+        ...current,
+        ...extracted,
+        // null means "no reliable signal" — keep whatever the form already
+        // had rather than overwrite it with null.
+        experienceLevel: extracted.experienceLevel ?? current.experienceLevel,
+      }));
+    }
+  }
+
+  // Students haven't worked yet — job title and years of experience stay on
+  // the form (a student may still have an internship worth logging) but
+  // become optional, both here and in the completion rule (see
+  // lib/profile-completion.ts).
+  const isStudent = profile.experienceLevel === "student";
 
   const updateWorkExperience = (index: number, entry: WorkExperienceEntry) => {
     setProfile((current) => ({
@@ -93,6 +183,35 @@ export function ProfileForm({ initialProfile }: Props) {
     }));
   };
 
+  const updateAcademicExperienceEntry = (index: number, entry: AcademicExperienceEntry) => {
+    setProfile((current) => ({
+      ...current,
+      academicExperience: current.academicExperience.map((existing, entryIndex) =>
+        entryIndex === index ? entry : existing,
+      ),
+    }));
+  };
+
+  const addAcademicExperienceEntry = () => {
+    if (profile.academicExperience.length >= MAX_ACADEMIC_EXPERIENCE_ENTRIES) return;
+    setProfile((current) => ({
+      ...current,
+      academicExperience: [
+        ...current.academicExperience,
+        { type: "award", title: "", institution: "", year: "", funded: false, description: "" },
+      ],
+    }));
+  };
+
+  const removeAcademicExperienceEntry = (index: number) => {
+    setProfile((current) => ({
+      ...current,
+      academicExperience: current.academicExperience.filter(
+        (_, entryIndex) => entryIndex !== index,
+      ),
+    }));
+  };
+
   return (
     // Wraps ResumeUpload too, not just the fields below — the resume file and
     // the profile fields save together in one Server Action call (see
@@ -101,7 +220,11 @@ export function ProfileForm({ initialProfile }: Props) {
     <form action={formAction} className="flex flex-col gap-6">
       <input type="hidden" name="profile" value={JSON.stringify(profile)} readOnly />
 
-      <ResumeUpload />
+      <ResumeUpload
+        extractFormAction={extractFormAction}
+        isExtracting={isExtracting}
+        extractError={extractState.error}
+      />
 
       <section className="flex flex-col gap-8 rounded-2xl border border-border bg-surface p-6 shadow-card">
         <div className="flex flex-col gap-1 border-b border-border pb-6">
@@ -134,13 +257,13 @@ export function ProfileForm({ initialProfile }: Props) {
               onChange={(event) => setProfile({ ...profile, location: event.target.value })}
             />
             <TextField
-              label="LinkedIn URL"
+              label="LinkedIn URL (Optional)"
               type="url"
               value={profile.linkedinUrl}
               onChange={(event) => setProfile({ ...profile, linkedinUrl: event.target.value })}
             />
             <TextField
-              label="Portfolio / GitHub"
+              label="Portfolio / GitHub (Optional)"
               type="url"
               value={profile.portfolioUrl}
               onChange={(event) => setProfile({ ...profile, portfolioUrl: event.target.value })}
@@ -163,7 +286,8 @@ export function ProfileForm({ initialProfile }: Props) {
         <div className="flex flex-col gap-4 border-t border-border pt-8">
           <h3 className="text-base font-semibold text-text-primary">Professional Info</h3>
           <TextField
-            label="Current/Recent Job Title"
+            label={isStudent ? "Current/Recent Job Title (Optional)" : "Current/Recent Job Title"}
+            placeholder={isStudent ? "Leave blank if you haven't worked yet" : undefined}
             value={profile.currentTitle}
             onChange={(event) => setProfile({ ...profile, currentTitle: event.target.value })}
           />
@@ -181,9 +305,10 @@ export function ProfileForm({ initialProfile }: Props) {
               }
             />
             <TextField
-              label="Years of Experience"
+              label={isStudent ? "Years of Experience (Optional)" : "Years of Experience"}
               type="number"
               min={0}
+              placeholder={isStudent ? "0" : undefined}
               value={profile.yearsExperience}
               onChange={(event) => setProfile({ ...profile, yearsExperience: event.target.value })}
             />
@@ -277,6 +402,47 @@ export function ProfileForm({ initialProfile }: Props) {
           </div>
         </div>
 
+        {/* Requested directly (not a numbered feature) — student-only:
+            awards, exchange programs, undergraduate research (Iniciação
+            Científica, com ou sem bolsa), and similar academic experience.
+            Optional, not counted toward profile completion, not part of AI
+            extraction (see types/index.ts's AcademicExperienceEntry). */}
+        {isStudent && (
+          <div className="flex flex-col gap-4 border-t border-border pt-8">
+            <div className="flex items-center justify-between">
+              <div>
+                <h3 className="text-base font-semibold text-text-primary">
+                  Academic Experience (Optional)
+                </h3>
+                <p className="mt-1 text-sm text-text-secondary">
+                  Awards, exchange programs, undergraduate research, and similar experience.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={addAcademicExperienceEntry}
+                disabled={profile.academicExperience.length >= MAX_ACADEMIC_EXPERIENCE_ENTRIES}
+                className="flex items-center gap-1 text-sm font-medium text-accent disabled:cursor-not-allowed disabled:text-text-muted"
+              >
+                <Plus aria-hidden="true" className="h-4 w-4" />
+                Add entry
+              </button>
+            </div>
+            {profile.academicExperience.length > 0 && (
+              <div className="flex flex-col gap-4">
+                {profile.academicExperience.map((entry, index) => (
+                  <AcademicExperienceCard
+                    key={index}
+                    entry={entry}
+                    onChange={(updated) => updateAcademicExperienceEntry(index, updated)}
+                    onRemove={() => removeAcademicExperienceEntry(index)}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
         <div className="flex flex-col gap-4 border-t border-border pt-8">
           <h3 className="text-base font-semibold text-text-primary">Job Preferences</h3>
           <TextField
@@ -324,6 +490,36 @@ export function ProfileForm({ initialProfile }: Props) {
           >
             {isPending ? "Saving…" : "Save Profile"}
           </button>
+        </div>
+
+        {/* Generate Resume from Profile reads whatever is currently saved
+            (see architecture.md's Feature 08 decision, Decision 7) — it
+            lives here, after Save Profile, rather than up in ResumeUpload's
+            card at the top of the page, precisely because of that
+            dependency (moved during Feature 08's build, on request). */}
+        <div className="flex flex-col gap-4 border-t border-border pt-8">
+          <div className="flex flex-col items-start justify-between gap-3 sm:flex-row sm:items-center">
+            <div>
+              <h3 className="text-base font-semibold text-text-primary">Generate a Resume</h3>
+              <p className="mt-1 text-sm text-text-secondary">
+                Creates a polished resume PDF from your saved profile above.
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={handleGenerate}
+              disabled={isPending || isGenerating}
+              className="flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-foreground disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              <FileText aria-hidden="true" className="h-4 w-4" />
+              {isGenerating ? "Generating…" : "Generate Resume from Profile"}
+            </button>
+          </div>
+          {generateError && <p className="text-sm text-error">{generateError}</p>}
+          <ResumePreview
+            resumePdfUrl={generatedResumeUrl}
+            resumeStorageKey={generatedResumeStorageKey}
+          />
         </div>
       </section>
     </form>

@@ -2,7 +2,7 @@
 
 // 1. External imports
 import { useRef, useState } from "react";
-import { CloudUpload, FileText } from "lucide-react";
+import { CloudUpload, Sparkles } from "lucide-react";
 
 // 2. Internal imports
 // (none)
@@ -10,11 +10,21 @@ import { CloudUpload, FileText } from "lucide-react";
 // 3. Type definitions
 const MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024;
 
+type Props = {
+  extractFormAction: (formData: FormData) => void;
+  isExtracting: boolean;
+  extractError?: string;
+};
+
 // 4. Component
 // Renders inside ProfileForm's <form> (see architecture.md's Feature 06
 // decision) — its own name="resume" input is picked up automatically by the
 // ancestor form's FormData on submit, no lifted state or callback needed.
-export function ResumeUpload() {
+// "Generate Resume from Profile" lives at the bottom of ProfileForm instead
+// of here (moved during Feature 08's build, on request) — it reads whatever
+// is currently saved, so it belongs near Save Profile, not above the fields
+// it depends on. This card only covers the "resume in" direction now.
+export function ResumeUpload({ extractFormAction, isExtracting, extractError }: Props) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
@@ -52,8 +62,7 @@ export function ResumeUpload() {
       <div>
         <h2 className="text-base font-semibold text-text-primary">Resume</h2>
         <p className="mt-1 text-sm text-text-secondary">
-          Upload an existing resume to auto-fill the profile, or generate a new tailored one from
-          your details below.
+          Upload an existing resume to auto-fill the profile below.
         </p>
       </div>
 
@@ -67,25 +76,34 @@ export function ResumeUpload() {
       />
       <div
         role="button"
-        tabIndex={0}
-        onClick={() => fileInputRef.current?.click()}
+        tabIndex={isExtracting ? -1 : 0}
+        aria-disabled={isExtracting}
+        onClick={() => {
+          if (isExtracting) return;
+          fileInputRef.current?.click();
+        }}
         onKeyDown={(event) => {
+          if (isExtracting) return;
           if (event.key === "Enter" || event.key === " ") {
             event.preventDefault();
             fileInputRef.current?.click();
           }
         }}
         onDragOver={(event) => {
+          if (isExtracting) return;
           event.preventDefault();
           setIsDragging(true);
         }}
         onDragLeave={() => setIsDragging(false)}
         onDrop={(event) => {
           event.preventDefault();
+          if (isExtracting) return;
           setIsDragging(false);
           acceptFile(event.dataTransfer.files[0]);
         }}
-        className={`flex cursor-pointer flex-col items-center gap-4 rounded-xl border border-dashed px-6 py-12 text-center transition-colors ${
+        className={`flex flex-col items-center gap-4 rounded-xl border border-dashed px-6 py-12 text-center transition-colors ${
+          isExtracting ? "cursor-not-allowed opacity-60" : "cursor-pointer"
+        } ${
           isDragging ? "border-accent bg-accent-muted" : "border-border-muted bg-surface-secondary"
         }`}
       >
@@ -105,16 +123,20 @@ export function ResumeUpload() {
 
       {error && <p className="text-sm text-error">{error}</p>}
 
-      <div className="flex flex-col items-start justify-between gap-3 border-t border-border pt-6 sm:flex-row sm:items-center">
-        <p className="text-sm text-text-secondary">Need a fresh document based on the fields below?</p>
-        <button
-          type="button"
-          className="flex items-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-foreground"
-        >
-          <FileText aria-hidden="true" className="h-4 w-4" />
-          Generate Resume from Profile
-        </button>
-      </div>
+      {selectedFileName && (
+        <div className="flex flex-col gap-2">
+          <button
+            type="submit"
+            formAction={extractFormAction}
+            disabled={isExtracting}
+            className="flex items-center justify-center gap-2 rounded-md border border-accent px-4 py-2 text-sm font-medium text-accent disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <Sparkles aria-hidden="true" className="h-4 w-4" />
+            {isExtracting ? "Extracting…" : "Extract from Resume"}
+          </button>
+          {extractError && <p className="text-sm text-error">{extractError}</p>}
+        </div>
+      )}
     </section>
   );
 }

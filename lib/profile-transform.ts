@@ -11,6 +11,8 @@
 
 // 2. Internal imports
 import type {
+  AcademicExperienceEntry,
+  AcademicExperienceType,
   EducationInfo,
   ExperienceLevel,
   ProfileFormData,
@@ -36,6 +38,15 @@ export type EducationRecord = {
   graduation_year: string;
 };
 
+export type AcademicExperienceRecord = {
+  type: string;
+  title: string;
+  institution: string;
+  year: string;
+  funded: boolean;
+  description: string;
+};
+
 export type ProfileRow = {
   full_name: string | null;
   phone: string | null;
@@ -55,6 +66,20 @@ export type ProfileRow = {
   salary_expectation: string | null;
   preferred_locations: string[] | null;
   is_complete: boolean | null;
+  // Added for Feature 08 (Resume PDF Generation) — the column has existed
+  // since Feature 04, this type just never needed to read it before now.
+  resume_pdf_url: string | null;
+  // Added live during Feature 08's build (migration run via run-raw-sql,
+  // 2026-09-07), after reverse-engineering the storage key from
+  // resume_pdf_url turned out unreliable (a live "View PDF" click 404'd,
+  // STORAGE_NOT_FOUND) — the InsForge SDK's own upload() response already
+  // returns the real key, so it's saved directly instead of re-derived.
+  // See architecture.md's Feature 08 decision, Decision 12's second correction.
+  resume_storage_key: string | null;
+  // Optional, student-only field requested directly (not a numbered
+  // feature) — see types/index.ts's AcademicExperienceEntry and
+  // architecture.md's Feature 06 decision, "Student exception" addendum.
+  academic_experience: AcademicExperienceRecord[] | null;
 };
 
 function emptyWorkExperienceEntry(): WorkExperienceEntry {
@@ -92,6 +117,28 @@ function fromEducationRecord(record: EducationRecord): EducationInfo {
   };
 }
 
+const ACADEMIC_EXPERIENCE_TYPES: AcademicExperienceType[] = [
+  "award",
+  "exchange_program",
+  "undergraduate_research",
+  "other",
+];
+
+function fromAcademicExperienceRecord(record: AcademicExperienceRecord): AcademicExperienceEntry {
+  return {
+    // Cast is safe: the DB CHECK constraint only allows these exact values;
+    // fall back to "other" for a row saved before that constraint existed.
+    type: (ACADEMIC_EXPERIENCE_TYPES as string[]).includes(record.type)
+      ? (record.type as AcademicExperienceType)
+      : "other",
+    title: String(record.title ?? ""),
+    institution: String(record.institution ?? ""),
+    year: String(record.year ?? ""),
+    funded: record.funded ?? false,
+    description: String(record.description ?? ""),
+  };
+}
+
 // 4. Component (n/a — pure transform module)
 
 export function toWorkExperienceRecords(entries: WorkExperienceEntry[]): WorkExperienceRecord[] {
@@ -102,6 +149,19 @@ export function toWorkExperienceRecords(entries: WorkExperienceEntry[]): WorkExp
     end_date: entry.currentlyWorkingHere ? null : entry.endDate,
     currently_working_here: entry.currentlyWorkingHere,
     key_responsibilities: entry.keyResponsibilities,
+  }));
+}
+
+export function toAcademicExperienceRecords(
+  entries: AcademicExperienceEntry[],
+): AcademicExperienceRecord[] {
+  return entries.map((entry) => ({
+    type: entry.type,
+    title: entry.title,
+    institution: entry.institution,
+    year: entry.year,
+    funded: entry.funded,
+    description: entry.description,
   }));
 }
 
@@ -149,6 +209,7 @@ export function fromProfileRow(row: ProfileRow | null, sessionEmail: string): Pr
       industries: [],
       workExperience: [emptyWorkExperienceEntry()],
       education: emptyEducationInfo(),
+      academicExperience: [],
       jobTitlesSeeking: "",
       remotePreference: "any",
       salaryExpectation: "",
@@ -178,6 +239,7 @@ export function fromProfileRow(row: ProfileRow | null, sessionEmail: string): Pr
         ? row.work_experience.map(fromWorkExperienceRecord)
         : [emptyWorkExperienceEntry()],
     education: row.education ? fromEducationRecord(row.education) : emptyEducationInfo(),
+    academicExperience: (row.academic_experience ?? []).map(fromAcademicExperienceRecord),
     jobTitlesSeeking: (row.job_titles_seeking ?? []).join(", "),
     // Cast is safe: the DB CHECK constraint only allows these exact values.
     remotePreference: (row.remote_preference as RemotePreference) ?? "any",

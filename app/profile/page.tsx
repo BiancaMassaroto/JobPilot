@@ -41,7 +41,7 @@ export default async function ProfilePage() {
 
   return (
     <>
-      <Navbar />
+      <Navbar isAuthenticated />
       <main className="mx-auto flex w-full max-w-[1440px] flex-1 flex-col gap-6 p-8">
         {completion.missingFields.length > 0 && (
           <CompletionIndicator
@@ -49,7 +49,11 @@ export default async function ProfilePage() {
             missingFields={completion.missingFields}
           />
         )}
-        <ProfileForm initialProfile={initialProfile} />
+        <ProfileForm
+          initialProfile={initialProfile}
+          initialResumePdfUrl={profileRow?.resume_pdf_url ?? null}
+          initialResumeStorageKey={profileRow?.resume_storage_key ?? null}
+        />
       </main>
     </>
   );

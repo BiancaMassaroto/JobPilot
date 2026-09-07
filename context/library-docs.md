@@ -558,7 +558,68 @@ const response = await openai.chat.completions.create({
 - If browser research returns empty — still run synthesis with job + profile only
 - yourEdge, gapsToAddress, and smartQuestions are the most valuable fields — never skip them
 
+## Gemini
+
+**Check first:** Check AGENTS.md for an installed Gemini skill. No Gemini SDK skill is installed as of this writing — use this file and the official Gemini API docs.
+
+**Scope note (Feature 08 decision, `architecture.md`, correcting Feature 07's original note):** Gemini is this project's provider for every AI feature, not just extraction. Feature 07 (extraction) and Feature 08 (resume generation) both use it. Features 10/13/17 still document GPT-4o below, pending their own `/develop` pass — the project-wide switch should carry into each when it's actually built, per architecture.md's Feature 08 decision, item 1.
+
+### Client Setup (Server-Only)
+
+```typescript
+// lib/gemini.ts
+import { GoogleGenAI } from "@google/genai";
+
+export const gemini = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
+```
+
+**This is a plain Google AI Studio key setup, not Vertex AI** — `GEMINI_API_PROJECT_NAME`/`GEMINI_PROJECT_ID` (also in `.env.local`) go unused here; don't wire them into this client.
+
+### Structured JSON Response
+
+**Verified live against the real API during the Feature 07 build** — the config shape below, the model string, and every rule under it are confirmed working end to end (not just type-checked), not the originally-assumed snippet. See the corrections below the code block.
+
+```typescript
+const response = await gemini.models.generateContent({
+  model: "gemini-3.6-flash",
+  contents: "Your prompt here",
+  config: {
+    responseMimeType: "application/json",
+    responseJsonSchema: z.toJSONSchema(yourZodSchema), // not responseSchema — see below
+    temperature: 0.3,
+    maxOutputTokens: 8000, // see the thinking-tokens note below before lowering this
+  },
+});
+
+if (!response.text) throw new Error("Empty response from Gemini");
+const result = JSON.parse(response.text);
+```
+
+**Corrections found during the Feature 07 build (all confirmed live, not just against the SDK's types):**
+
+- **`gemini-2.5-flash` is gone.** A live call returned `404 "This model models/gemini-2.5-flash is no longer available to new users. Please update your code to use models/gemini-3.6-flash..."`. Feature 07 now uses `gemini-3.6-flash`. If you're reading this for a new feature, don't assume `gemini-3.6-flash` is still current either — Google retires Gemini models on this kind of short notice; check `ai.google.dev`'s current model list, or make one real call and read the error if it's wrong.
+- **Use `responseJsonSchema`, not `responseSchema`, when the schema comes from `z.toJSONSchema()`.** `responseSchema` is typed `SchemaUnion` — a narrower, OpenAPI-style shape — and a plain JSON Schema object doesn't cleanly typecheck against it. `responseJsonSchema` is typed `unknown` and is the SDK's own documented field for a real JSON Schema (confirmed in `node_modules/@google/genai`'s own type definitions and doc comments: "Since v1.9.0, we switch to use backend JSON schema support... we move the data that was treated as JSON schema from the responseSchema field to the responseJsonSchema field").
+- **`gemini-3.6-flash` is a thinking model — its thinking tokens count against `maxOutputTokens`.** A live run's `response.usageMetadata` showed `thoughtsTokenCount: 1292` for a short sample resume, on top of the actual JSON output — `maxOutputTokens: 800` (the original assumption, carried over from how GPT-4o was budgeted) silently truncated the JSON mid-string. `maxOutputTokens: 3000` cleared a short sample resume in isolated testing, but a real, multi-page (and non-English) resume still truncated at `3000` when this went through the actual running app — raised to `8000`. Check `response.candidates?.[0]?.finishReason === "MAX_TOKENS"` when a response fails to `JSON.parse` — that's how a truncated response actually presents (as ordinary malformed JSON), not as a distinct error.
+- **Thinking cannot be disabled on this model.** Passing `config: { thinkingConfig: { thinkingBudget: 0 } }` (the documented way to turn off thinking on some Gemini models) returned a live `400 INVALID_ARGUMENT` on `gemini-3.6-flash`. Don't add it back without confirming a specific model actually supports budget `0`.
+- **The provisioned `GEMINI_API_KEY` is on the free tier, with a hard quota of 20 requests/day per model** (`generativelanguage.googleapis.com/generate_content_free_tier_requests`, confirmed via a live `429 RESOURCE_EXHAUSTED` during testing). Fine for building and light manual testing; upgrade the key's billing plan before this feature sees real usage, or every user past the 20th request that day gets `EXTRACTION_FAILED_ERROR` with no indication it was a quota problem, not a real failure.
+
+**`responseJsonSchema` should be derived from a real zod schema, not hand-written separately.** Zod v4 (already installed) ships `z.toJSONSchema()` for exactly this — define the shape once as a zod schema, derive `responseJsonSchema` from it, and reuse the same schema to validate the parsed response. Two hand-maintained copies of the same shape drift apart silently (this bit Feature 07's own extraction schema in an earlier draft — see `architecture.md`'s Feature 07 decision, Decision 8).
+
+**A field-level `.regex()` alone rejects the whole response over one malformed value — prefer `.catch("")` for a field that has a defined empty state.** E.g. `z.string().regex(/^\d{4}-\d{2}$/).catch("")` for a date field: a value that doesn't match falls back to `""` instead of failing `safeParse` entirely. `z.toJSONSchema()` handles `.catch()` fine (it does **not** handle `.transform()` — that throws `"Transforms cannot be represented in JSON Schema"` at schema-generation time, confirmed live; do any cross-field normalization as a plain function on the already-validated result instead, not as a schema transform).
+
+**Rules:**
+
+- Always use `responseJsonSchema` (derived from zod) for structured data — stronger than a bare "return JSON" instruction, the schema is enforced
+- Always check `response.text` is truthy before parsing — it's typed `string | undefined`
+- Always validate parsed JSON before using — wrap in try/catch
+- Temperature `0.3` for extraction (deterministic), `0.7` for resume generation (natural variation) — same convention the OpenAI table below originally documented, now applied to Gemini project-wide (Feature 08 decision, item 1)
+- Budget `maxOutputTokens` generously on a thinking model — thinking tokens are invisible in `response.text` but still consume the budget; check `response.usageMetadata.thoughtsTokenCount` if output is coming back truncated. `8000` has been the working budget for both extraction (Feature 07) and resume generation (Feature 08) so far — don't drop back to a smaller GPT-4o-style budget without re-verifying live, the way `800` silently truncated Feature 07's first attempt
+
+---
+
 ## OpenAI GPT-4o
+
+**Not currently used anywhere in this project (Feature 08 decision, `architecture.md`, item 1) — kept below for Features 10/13/17 to reconsider when each is built,** since the project switched to Gemini for every AI feature during Feature 08's build. `openai` is not an approved dependency (see `code-standards.md`); if a future feature reconsiders GPT-4o specifically, that reasoning belongs in that feature's own `/architect` decision, not assumed from this section.
 
 **Check first:** Check AGENTS.md for an installed OpenAI skill. The skill will have the latest API patterns and model capabilities.
 
@@ -766,7 +827,8 @@ Only use these — others are silently ignored:
 - Always use `renderToBuffer` — not `renderToStream` or `PDFDownloadLink`
 - PDF generation only in `app/api/resume/` routes
 - Generated buffer wrapped in a `Blob` and uploaded directly to InsForge Storage — never written to disk
-- Always save the resolved storage URL (`data.url`) to DB after upload; the `resumes` bucket is private, so exposing that URL to a client requires a server-side ownership check first.
+- Save **both** the resolved storage URL (`data.url`) and the bare object key (`data.key`) to DB after upload — the InsForge docs' own general Storage guidance already says this, and Feature 08 found out why the hard way: reverse-engineering the key back out of the URL later (rather than saving `data.key` directly) hit a real, live `STORAGE_NOT_FOUND` from InsForge. Save the key under its own column (e.g. `resume_storage_key`), not derived later.
+- **Never hand the stored URL to a client directly.** Confirmed live during Feature 08's build: opening it in a browser 401s (`AUTH_INVALID_CREDENTIALS`, "No token provided") — the `resumes` bucket needs a real Authorization bearer token, which only the SDK's own authenticated HTTP client attaches (via `insforge.storage.from(...).download()`), never a plain browser navigation. Serve it through a same-origin route that calls `.download()` with the server client and the saved key instead (see `app/api/resume/download/route.ts` and architecture.md's "InsForge Storage" section) — this doubles as the per-object ownership check that section used to flag as unsolved, since the route only ever looks up the caller's own row.
 
 ---
 
@@ -774,28 +836,56 @@ Only use these — others are silently ignored:
 
 **Check first:** Check AGENTS.md for an installed pdf-parse skill.
 
+**Corrected against the installed package (Feature 07 build)**: the snippet below (a default-exported `pdf(buffer)` function) is the **pdf-parse v1** API. The installed version is **pdf-parse v2.4.5**, which replaced that with a `PDFParse` class — `new PDFParse({ data: buffer })`, then `await parser.getText()` returns `{ text, ... }`, then `await parser.destroy()`. Confirmed against the installed package's own bundled README and `.d.cts` types (`node_modules/pdf-parse`), and by smoke-testing the import directly — no debug-path throw on import in this environment.
+
+### Next.js / Turbopack Setup (required — confirmed live, not optional)
+
+`PDFParse` (built on pdfjs-dist) defaults to spinning up a real worker the way it would in a browser. Under Next.js (Turbopack) this fails two different ways, both confirmed live during the Feature 07 build against the real running dev server and a real production build — not just a docs mismatch:
+
+1. **Dev server:** `Setting up fake worker failed: Cannot find module '.../.next/dev/server/chunks/ssr/pdf.worker.mjs'` — pdfjs-dist can't resolve its own worker script inside Turbopack's dev bundle output.
+2. **Production build:** even after fixing #1, importing `pdf-parse/worker` pulls in `@napi-rs/canvas`'s native `.node` binding, which Turbopack's build fails on: `Error: non-ecmascript placeable asset — asset is not placeable in ESM chunks`.
+
+**Fix, both parts required:**
+
+```typescript
+// Once, before any `new PDFParse(...)` call — module scope is fine.
+import { PDFParse } from "pdf-parse";
+import { getData as getPdfWorkerData } from "pdf-parse/worker";
+
+PDFParse.setWorker(getPdfWorkerData());
+```
+
+Use `getData()` (a self-contained base64 data URL for the worker script), **not** `getPath()` — `getPath()` returns a filesystem path relative to the bundled runtime file, which hits the exact same bundler-relocation problem `getData()` exists to avoid.
+
+```typescript
+// next.config.ts
+const nextConfig: NextConfig = {
+  serverExternalPackages: ["pdf-parse", "@napi-rs/canvas"],
+};
+```
+
+Without this, `pdf-parse` works in `npx tsc`/plain Node scripts but breaks specifically under Next.js — don't trust a standalone script's success alone before shipping a Next.js feature that uses it.
+
 ### Extract Text from Uploaded Resume
 
 ```typescript
-import pdf from "pdf-parse";
+import { PDFParse } from "pdf-parse";
 
-// In API route handling resume upload
-export async function POST(req: NextRequest) {
-  const formData = await req.formData();
-  const file = formData.get("resume") as File;
-  const arrayBuffer = await file.arrayBuffer();
-  const buffer = Buffer.from(arrayBuffer);
+// In a Server Action or Route Handler handling resume upload
+const arrayBuffer = await file.arrayBuffer();
+const buffer = Buffer.from(arrayBuffer);
 
-  const pdfData = await pdf(buffer);
-  const extractedText = pdfData.text; // raw text content
-
-  // Send to GPT-4o for structured extraction
-}
+const parser = new PDFParse({ data: buffer });
+const result = await parser.getText();
+await parser.destroy();
+const extractedText = result.text; // raw text content
 ```
 
 **Rules:**
 
 - Server-side only — never import in client components
-- `pdfData.text` is raw unformatted text — GPT-4o handles the structure extraction
-- Always handle parse errors — some PDFs are image-based and return empty text
-- If `pdfData.text` is empty or very short — return error to user: "Could not extract text from this PDF. Please try a different file."
+- Do the worker setup above once, before this runs — otherwise this throws under Next.js even though it works in a plain Node script
+- `result.text` is raw unformatted text — the AI provider handles structure extraction
+- Always handle parse errors — some PDFs are image-based, password-protected, or corrupted, and either throw or return empty text; wrap the whole call in try/catch
+- If `result.text` is empty or under ~50 characters — return error to user: "Could not extract text from this PDF. Please try a different file."
+- `PDFParse`'s `data` option accepts a Node `Buffer` directly (it's a `Uint8Array` subclass) — no extra conversion needed beyond `Buffer.from(arrayBuffer)`

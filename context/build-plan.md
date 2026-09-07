@@ -117,20 +117,22 @@ Wire profile form to InsForge DB.
 
 ### 07 AI Profile Extraction from Resume
 
-Extract from Resume button — GPT-4o reads uploaded PDF and auto-fills profile form fields.
+Extract from Resume button — Gemini reads uploaded PDF and auto-fills profile form fields.
+
+**Decision finalized (`/architect`, 2026-09-07)** — see `architecture.md`'s "AI Profile Extraction from Resume" section for the full rationale, including the Gemini-over-GPT-4o call (Features 08/10/13/17 still use GPT-4o until each is re-decided). Summary:
 
 **UI:**
 
-- Extract from Resume button appears after resume is uploaded
+- Extract from Resume button appears in the resume card as soon as a file is selected — before Save Profile, not after
 - Loading state while processing
-- Form fields populate automatically after extraction
+- Form fields populate automatically after extraction — every mapped field is overwritten unconditionally, no merge
 - User reviews and edits if needed before saving
 
 **Logic:**
 
-- pdf-parse extracts raw text from uploaded PDF buffer
-- If extracted text is empty or too short — return error: "Could not extract text from this PDF. Please try a different file."
-- GPT-4o reads extracted text and returns structured JSON matching all profile field names
+- pdf-parse extracts raw text from the selected PDF's buffer
+- If extracted text is under 50 characters — return error: "Could not extract text from this PDF. Please try a different file."
+- Gemini (`@google/genai`, `gemini-3.6-flash`) reads extracted text and returns structured JSON for: name, phone, location, links, current title, experience level, years of experience, skills, industries, work experience (up to 3 roles), education — never the job-seeking preference fields or email
 - Form fields populated with extracted data
 - User saves manually after reviewing
 
@@ -138,18 +140,18 @@ Extract from Resume button — GPT-4o reads uploaded PDF and auto-fills profile 
 
 ### 08 Resume PDF Generation from Profile
 
-Generate a clean professional PDF resume from current profile data using GPT-4o.
+Generate a clean professional PDF resume from current profile data using Gemini.
 
-**Logic:**
+**Logic** (corrected 2026-09-07 — see `architecture.md`'s Feature 08 decision for the full reasoning; this paragraph went through two corrections during the same build: first Gemini → GPT-4o to match the provider convention documented at the time, then back to Gemini once the engineer directed a project-wide provider switch — Gemini for every AI feature, not just extraction):
 
 - POST /api/resume/generate
 - Reads current profile data from profiles table
-- GPT-4o generates professional resume content:
+- Gemini (`@google/genai`, `gemini-3.6-flash`) generates professional resume content from the profile's prose-bearing fields only:
   - Professional summary paragraph
   - Polished work experience bullet points
   - Clean professional language throughout
-- @react-pdf/renderer renders GPT-4o output into clean single-page PDF using renderToBuffer()
-- Buffer uploaded to InsForge Storage at resumes/{user_id}/resume.pdf with upsert: true
+- @react-pdf/renderer renders the profile's structured fields plus Gemini's output into a clean single-page PDF using renderToBuffer()
+- Buffer uploaded to InsForge Storage at resumes/{user_id}/resume-{uuid}.pdf (versioned key — the installed SDK has no upsert option)
 - resume_pdf_url updated in profiles table
 
 ---

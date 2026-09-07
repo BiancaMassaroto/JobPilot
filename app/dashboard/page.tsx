@@ -11,7 +11,7 @@ import { Navbar } from "@/components/layout/Navbar";
 export default function DashboardPage() {
   return (
     <>
-      <Navbar />
+      <Navbar isAuthenticated />
       <main className="mx-auto flex w-full max-w-[1440px] flex-1 flex-col items-center justify-center gap-4 p-8 text-center">
         <div className="flex max-w-md flex-col items-center gap-3 rounded-2xl border border-border bg-surface p-8 shadow-card">
           <h1 className="text-base font-semibold text-text-primary">Dashboard coming soon</h1>

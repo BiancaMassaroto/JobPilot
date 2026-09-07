@@ -4,16 +4,20 @@
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
-import { Menu, X } from "lucide-react";
+import { LogOut, Menu, X } from "lucide-react";
 import { useState } from "react";
 
 // 2. Internal imports
-// (none)
+import { SignOutButton } from "@/components/auth/SignOutButton";
 
 // 3. Type definitions
 type NavLink = {
   label: string;
   href: string;
+};
+
+type Props = {
+  isAuthenticated?: boolean;
 };
 
 const NAV_LINKS: NavLink[] = [
@@ -23,7 +27,12 @@ const NAV_LINKS: NavLink[] = [
 ];
 
 // 4. Component
-export function Navbar() {
+// isAuthenticated is server-computed and passed in by each page (rather than
+// resolved client-side here) so there's no logged-in/out flash — every
+// caller already knows the session: `/` redirects away when logged in, and
+// `/dashboard` + `/profile` are gated by proxy.ts so they're only ever
+// rendered logged in.
+export function Navbar({ isAuthenticated = false }: Props) {
   const pathname = usePathname();
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
@@ -60,12 +69,19 @@ export function Navbar() {
       </nav>
 
       <div className="flex items-center gap-2">
-        <Link
-          href="/dashboard"
-          className="rounded-md bg-text-slate px-4 py-2 text-sm font-medium text-accent-foreground"
-        >
-          Start for free
-        </Link>
+        {isAuthenticated ? (
+          <SignOutButton className="flex items-center gap-2 rounded-md border border-border bg-surface px-4 py-2 text-sm font-medium text-text-primary hover:bg-surface-secondary">
+            <LogOut aria-hidden="true" className="h-3.5 w-3.5" />
+            Log out
+          </SignOutButton>
+        ) : (
+          <Link
+            href="/dashboard"
+            className="rounded-md bg-text-slate px-4 py-2 text-sm font-medium text-accent-foreground"
+          >
+            Start for free
+          </Link>
+        )}
         <button
           type="button"
           className="rounded-md p-2 text-text-dark hover:bg-surface-secondary hover:text-text-primary md:hidden"
