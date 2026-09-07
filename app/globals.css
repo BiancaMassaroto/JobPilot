@@ -68,6 +68,8 @@
 
   /* Error — red */
   --color-error: #ef4444;
+  --color-error-light: #ffe2e2;
+  --color-error-lightest: #fef2f3;
   --color-error-foreground: #ffffff;
 
   /* LinkedIn brand */

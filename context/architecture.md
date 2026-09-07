@@ -292,7 +292,7 @@ The tables above name columns and types; this section is what actually gets exec
 - **`jobs.run_id` ownership is enforced at the DB level, not just existence.** A plain `run_id uuid REFERENCES agent_runs(id)` only proves the run exists — it does not stop a row where `jobs.user_id` differs from that run's `agent_runs.user_id` (RLS's `WITH CHECK (auth.uid() = user_id)` checks the job's own `user_id`, never who owns the run it points at). That gap lets one user's job attach to another user's run, and a future run deletion would then cascade-delete a job that isn't the run owner's. **Decision: a composite FK `(run_id, user_id) REFERENCES agent_runs(id, user_id)`**, which requires `agent_runs` to carry a `UNIQUE (id, user_id)` constraint as the FK target; Postgres skips the check when `run_id IS NULL` (source `url`), so it only bites when a run is actually referenced. Paired with a `CHECK` tying `source` to `run_id`'s presence (`search` requires one, `url` forbids one), so the two nullable-FK-plus-enum fields can't drift apart either.
 - **Cascade behavior**: deleting a user cascades down through `agent_runs`, `jobs`, and `agent_logs`; deleting an `agent_run` also cascades to its `jobs` and `agent_logs` (nothing in scope deletes a run today — this only matters if a future admin/cleanup path does, but an orphaned row is worse than an assumption stated plainly here).
 - **`jobs.company_researched_at` added — neither existing table had a usable timestamp for "when was this company researched."** `agent_runs` has `started_at`/`completed_at`, not `created_at`; `jobs.found_at` records when the job listing was found, not when its `company_research` dossier was saved, and `agent_logs` requires a `run_id` (company research runs standalone from a job details page, outside any `agent_run`, so it has none to attach a log to). **Decision: a nullable `company_researched_at timestamptz`**, set when the dossier is saved (`build-plan.md` Feature 13), null until then — the activity timestamp `build-plan.md`'s Recent Activity merge (Feature 16) needs.
-- **Storage isolation gap — flagged, not silently assumed away.** `storage.objects` has `rlsEnabled: false` and zero policies; `create-bucket` only takes a coarse `isPublic` flag. There is **no per-object ownership check at the DB level** — a "private" bucket means "must be authenticated," not "only the owning user can read their own file." **Decision: private bucket + the existing unguessable `{user_id}/resume.pdf` path is the only real protection** (obscurity, not enforcement). If resumes ever need real per-user isolation, that means routing downloads through a server action that checks `profiles.resume_pdf_url` ownership first — not something `create-bucket`'s `isPublic` flag can give us. Flagged as a Follow-up, not solved here.
+- **Storage isolation gap — flagged, not silently assumed away.** `storage.objects` has `rlsEnabled: false` and zero policies; `create-bucket` only takes a coarse `isPublic` flag. There is **no per-object ownership check at the DB level** — a "private" bucket means "must be authenticated," not "only the owning user can read their own file." **Decision: private bucket + versioned, unguessable `{user_id}/resume-{uuid}.pdf` paths are the current protection** (obscurity, not enforcement). If resumes ever need real per-user isolation, that means routing downloads through a server action that checks `profiles.resume_pdf_url` ownership first — not something `create-bucket`'s `isPublic` flag can give us. Flagged as a Follow-up, not solved here.
 
 **Migration SQL** (run via the `run-raw-sql` MCP tool when Feature 04 is built — `/architect` verifies and decides, it doesn't execute):
 
@@ -417,9 +417,9 @@ CREATE POLICY "agent_logs_all_own" ON public.agent_logs FOR ALL USING (auth.uid(
 
 | Bucket  | Path                         | Contents                  |
 | ------- | ---------------------------- | ------------------------- |
-| resumes | resumes/{user_id}/resume.pdf | Current active resume PDF |
+| resumes | resumes/{user_id}/resume-{uuid}.pdf | Current active resume PDF |
 
-**Access: authenticated users only — NOT per-object ownership enforced.** `storage.objects` has `rlsEnabled: false` (see the Storage isolation gap decision above); the bucket is private, so a request must be authenticated, but any authenticated user who obtains another user's exact `{user_id}/resume.pdf` path/key can read that file — the unguessable path is the only current protection, obscurity rather than access control. Do not build or document a feature (e.g. exposing `resume_pdf_url` directly to the client, or any URL that reaches this bucket) as if "own files only" is enforced; it is not, until downloads are served through a server-side action that checks `profiles.resume_pdf_url` ownership before returning bytes. This is a known limitation, not a guarantee — treat it as a Follow-up, same as the decision above.
+**Access: authenticated users only — NOT per-object ownership enforced.** `storage.objects` has `rlsEnabled: false` (see the Storage isolation gap decision above); the bucket is private, so a request must be authenticated, but any authenticated user who obtains another user's exact versioned path/key can read that file — the unguessable path is the only current protection, obscurity rather than access control. Do not build or document a feature (e.g. exposing `resume_pdf_url` directly to the client, or any URL that reaches this bucket) as if "own files only" is enforced; it is not, until downloads are served through a server-side action that checks `profiles.resume_pdf_url` ownership before returning bytes. This is a known limitation, not a guarantee — treat it as a Follow-up, same as the decision above.
 
 ---
 
@@ -639,3 +639,83 @@ Rules the AI agent must never violate:
 - Always scope InsForge queries to the current user_id — never query without a user filter.
 - Adzuna API always includes category=it-jobs — never search without this filter.
 - jobs.source is always 'search' or 'url' — never any other value.
+
+---
+
+## Profile Save Logic — Persistence & Completion Rules (Feature 06 decision — `/architect`, 2026-09-07)
+
+`build-plan.md`'s Feature 06 entry says the Server Action should save all
+profile fields, upload a resume PDF, and set `is_complete` / "completion
+percentage and missing fields" — but names neither which fields are actually
+required, how the percentage is computed, nor how a file gets from the
+browser into a Server Action. This section closes those gaps. Verified
+against the real, installed `@insforge/sdk` / `@supabase/postgrest-js` types
+directly (not just `library-docs.md`'s prose, which turned out to be wrong on
+the Storage API — see the correction below).
+
+**1. Persistence.** One `insforge.database.from('profiles').upsert({ id: user.id, ...fields, updated_at }, { onConflict: 'id' })` handles both the first save and every later save, since `profiles.id` is always the authenticated user's id (Feature 04). Never include `created_at` in the payload — omitting it lets Postgres's `DEFAULT now()` apply only on the insert branch; including it would stomp the real creation date on every save. (Note: the query builder is namespaced under `.database` — `insforge.from(...)` does not exist on the client; see the `library-docs.md` correction below, found the same way as the Storage one.)
+
+**2. Read / prefill path.** `app/profile/page.tsx` becomes an async Server Component: `auth.getCurrentUser()`, then `insforge.database.from('profiles').select('*').eq('id', user.id).maybeSingle()` — confirmed real on the installed query builder, returns `null` cleanly for a first-time user instead of erroring. Feature 05's hardcoded "Faizan Ali" mock is deleted; `ProfileForm` takes an `initialProfile` prop (real data, or defaults + the session email if no row exists yet). `CompletionIndicator`'s two hardcoded props become real computed values from the same fetch.
+
+**3. jsonb key naming.** `work_experience` and `education` are stored with **snake_case** keys, matching every other column in this schema, even though the JS-side `ProfileFormData` type is camelCase. One shared transform (both directions) lives in `actions/profile.ts` so Feature 07 (AI extraction) can reuse the exact same shape instead of re-deriving it.
+
+**4. `education` is a single JSON object, not an array** — matches the approved design (one education block, no "add" control), even though the live column defaults to `'[]'`. No migration: every write path always sets `education` explicitly, so the array default is never actually read or written by any code path.
+
+**5. `job_titles_seeking` / `preferred_locations`** stay `text[]` columns (no schema change) with a comma split/join transform: split on `,`, trim, drop empties, on write; `.join(', ')` on read. Documented limitation, not a bug: a title containing a literal comma (e.g. "Engineer, Backend") splits into two entries — inherent to the free-text-comma pattern the approved Feature 05 design already uses.
+
+**6. Completion rule** — the actual gap `build-plan.md` left open. Only plain text/array fields participate; every `<select>` (`work_authorization`, `experience_level`, `remote_preference`, `highest_degree`) is excluded because none of them can currently be blank (Feature 05 built no placeholder/unset option). Optional fields (`industries`, `salaryExpectation`, `preferredLocations`) and the resume upload are excluded. 11 required units, each worth 1/11 of the percentage:
+   - Full Name, Phone, Location, LinkedIn URL, Portfolio/GitHub
+   - Current/Recent Job Title, Years of Experience, Skills (non-empty array)
+   - Work Experience: at least one entry with company name, job title, start date, key responsibilities all non-empty, **and** end date non-empty whenever "currently working here" is unchecked
+   - Education: field of study, institution name, graduation year all non-empty (highest degree excluded, it's a select)
+   - Job Titles Seeking
+
+   `is_complete` means **all 11**, not a partial threshold — `missingFields.length === 0`. The approved design's own mock (70%, exactly `PHONE`/`LOCATION`/`EDUCATION` flagged) is illustrative, not a target to reverse engineer exactly; this rule produces ~73% on that same mock data, close enough to confirm the rule's shape without curve fitting to a placeholder number.
+
+   **Follow-up, not a Feature 06 blocker:** because no select can ever be blank, a user who never touches them (e.g. `work_authorization` silently defaulting to `citizen`) looks more "complete" than reality. Worth a placeholder/unset option in a later pass on Feature 05's selects.
+
+**7. No new DB columns** for completion percentage or missing fields. `project-overview.md`'s dashboard only ever needs the `is_complete` boolean for its "incomplete profile" banner — nothing queries on percentage. Both values are a pure function of already-persisted fields, computed on demand by `lib/profile-completion.ts` (new, stands alone — no need for `lib/utils.ts` yet), reused by both the page (display) and the Server Action (`is_complete`). To detect "first transition to complete" for the `profile_completed` PostHog event, the action reads the prior row's `is_complete` in the same `.maybeSingle()` read, before the upsert — `upsert()` only returns post-write state.
+
+**8. File upload wiring.** `ResumeUpload.tsx` keeps the selected file in the descendant native `<input name="resume">`; drag-and-drop synchronizes the dropped file onto that input with `DataTransfer`, so no `onFileSelect` prop or lifted `File` state is needed. `ProfileForm.tsx` wraps the upload and profile fields in `<form action={formAction}>` using React 19's `useActionState(saveProfileAction, ...)`, and the shared native `FormData` carries `profile` (the whole `ProfileFormData` JSON-stringified) plus `resume` (the real input's `File`, if any). The Save button is `type="submit"`, disabled while pending, and surfaces an inline error.
+
+   The Server Action (`actions/profile.ts`, new) parses `profile` with zod, re-validates the file's type and size server-side (the `ResumeUpload` client check alone isn't trustworthy — a direct POST bypasses the component), uploads a valid file to a versioned temporary path, upserts the profile fields, and only then persists the resolved `data.url` in a follow-up profile upsert. If either database write fails, it removes the newly uploaded object. The upload uses **no third options argument**; the response's `data.url` is resolved directly, with no separate `getPublicUrl()` call.
+
+**9. `cover_letter_tone` stays permanently unwritten.** It's a real column (Feature 04) for a feature explicitly out of scope (`project-overview.md`: "Cover letter generation" is out of scope) — Feature 05 correctly never built UI for it, and Feature 06 must not "notice the gap" and add it back. Never referenced in `ProfileFormData`, never included in the upsert payload.
+
+**10. Auth defense-in-depth.** The Server Action re-checks `auth.getCurrentUser()` itself even though `proxy.ts` already guards `/profile` (matches the Feature 04 RLS "defense in depth" philosophy) — but unlike `signInWithOAuthAction`/`signOutAction` (the sanctioned `Promise<never>` redirect-only exception), this is a normal `{ success, error? }` action: on a missing user it returns `{ success: false, error: "Not authenticated" }`, it never calls `redirect()`. This branch should be unreachable in practice; it's a paranoia return, not a real second control-flow path.
+
+### SDK API corrections
+
+Two `library-docs.md` sections documented signatures that don't match the
+installed SDK — both caught by the real build/typecheck loop while building
+Feature 06 (not caught at `/architect` time for the second one), corrected
+there; recorded here for traceability.
+
+**Storage.** `library-docs.md`'s Storage section (and its `@react-pdf/renderer` example) documented an options argument that doesn't exist:
+```ts
+// WRONG — was documented, does not match the installed SDK
+.upload(`${userId}/resume.pdf`, fileBuffer, { contentType: "application/pdf", upsert: true })
+```
+Real signature (`node_modules/@insforge/sdk/dist/client-DZHoCptg.d.ts:509`):
+```ts
+upload(path: string, file: File | Blob): Promise<StorageResponse<StorageFileSchema>>;
+// StorageFileSchema already includes a resolved `url` — no separate getPublicUrl() call needed.
+// No options object at all: same-path upload always overwrites in place (PUT semantics).
+```
+
+**Database.** `library-docs.md`'s DB Queries section (and this file's own draft of decisions 1–2 above, until this correction) called the query builder straight off the client — that method doesn't exist there:
+```ts
+// WRONG — was documented, does not match the installed SDK
+await insforge.from("jobs").select("*")...
+```
+Real shape (`node_modules/@insforge/sdk/dist/client-DZHoCptg.d.ts:1038`): `InsForgeClient` only declares `readonly database: Database` (plus `storage`, `auth`, etc.) — no top-level `.from()`. The query builder is `insforge.database.from(table)`. This affects every InsForge DB call in every feature, not just Feature 06 — Features 09 through 17 (Adzuna jobs, company research, dashboard stats) all read/write through this same pattern and should use `insforge.database.from(...)`.
+
+### Build plan for `/develop`
+
+1. `types/index.ts` — no structural change to `ProfileFormData`. Add `ProfileCompletion`: `{ percentage: number; missingFields: string[] }`.
+2. `lib/profile-completion.ts` (new) — `calculateProfileCompletion(profile: ProfileFormData): ProfileCompletion`, pure, no InsForge imports, encodes the 11-unit rule from Decision 6.
+3. `actions/profile.ts` (new) — `"use server"`; zod validation of the parsed `profile` JSON; `getCurrentUser()` guard (`{success:false,error}`, no redirect); one `.maybeSingle()` read for the prior `is_complete`; optional server-side file re-validation + `.storage.upload()`; camelCase → snake_case transform for the two jsonb fields; comma split for the two `text[]` fields; always set `email` from the session user, never client input; `calculateProfileCompletion` → `is_complete`; upsert; fire `profile_completed` only on the false/absent → true transition; `revalidatePath('/profile')`; return `{success, error?}`.
+4. `app/profile/page.tsx` — becomes `async`; fetch user + profile row; build `initialProfile`; compute completion for `CompletionIndicator`; pass `initialProfile` down to `ProfileForm`.
+5. `components/profile/ProfileForm.tsx` — accept `initialProfile` prop (delete `INITIAL_PROFILE`); use `useActionState(saveProfileAction, ...)`; `<form action={formAction}>`; Save button → `type="submit"`, pending/disabled, inline error. The descendant resume input submits natively with the same form.
+6. `components/profile/ResumeUpload.tsx` — synchronize dropped files onto the native input with `DataTransfer`; do not add a callback prop or lift duplicate `File` state.
+7. `library-docs.md` — the Storage signature corrections (see "Storage API correction" above) — already applied as part of this decision.

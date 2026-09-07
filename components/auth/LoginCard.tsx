@@ -6,7 +6,10 @@ import { ShieldCheck } from "lucide-react";
 
 // 2. Internal imports
 import { signInWithOAuthAction } from "@/actions/auth";
-import { captureBeforeNavigate, isPostHogConfigured } from "@/lib/posthog-client";
+import {
+  captureBeforeNavigate,
+  isPostHogConfigured,
+} from "@/lib/posthog-client";
 
 // 3. Type definitions
 // (none — no props)
@@ -26,10 +29,14 @@ export function LoginCard() {
   // brief window so the event has a chance to actually leave the browser.
   function handleOAuthSubmit(provider: "google" | "github") {
     return (event: SubmitEvent<HTMLFormElement>) => {
-      if (!isPostHogConfigured || submittingRef.current) return;
+      if (!isPostHogConfigured || submittingRef.current) {
+        return;
+      }
+
       event.preventDefault();
       const form = event.currentTarget;
       submittingRef.current = true;
+
       captureBeforeNavigate("oauth_sign_in_started", { provider }).then(() => {
         form.requestSubmit();
       });
@@ -71,7 +78,10 @@ export function LoginCard() {
         </div>
 
         <div className="flex flex-col gap-3">
-          <form action={signInWithGoogle} onSubmit={handleOAuthSubmit("google")}>
+          <form
+            action={signInWithGoogle}
+            onSubmit={handleOAuthSubmit("google")}
+          >
             <button
               type="submit"
               className="flex w-full items-center gap-3 rounded-md border border-border bg-surface px-4 py-3 text-sm font-medium text-text-primary hover:bg-surface-secondary"
@@ -81,7 +91,10 @@ export function LoginCard() {
             </button>
           </form>
 
-          <form action={signInWithGithub} onSubmit={handleOAuthSubmit("github")}>
+          <form
+            action={signInWithGithub}
+            onSubmit={handleOAuthSubmit("github")}
+          >
             <button
               type="submit"
               className="flex w-full items-center gap-3 rounded-md border border-border bg-surface px-4 py-3 text-sm font-medium text-text-primary hover:bg-surface-secondary"

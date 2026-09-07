@@ -98,6 +98,8 @@ className="bg-purple-500 text-gray-600"
 
   /* Error — red */
   --color-error: #ef4444;
+  --color-error-light: #ffe2e2;
+  --color-error-lightest: #fef2f3;
   --color-error-foreground: #ffffff;
 
   /* LinkedIn brand */
@@ -191,6 +193,18 @@ Match score bars and indicators use gradient stops based on score range:
 | Tailored   | `bg-accent-light`      | `text-accent`             |
 | High Match | `bg-success-lightest`  | `text-success-foreground` |
 | Low Match  | `bg-surface-secondary` | `text-text-secondary`     |
+
+### Attention / Missing Field Badges
+
+Used for "Profile needs attention" style banners — missing field tags (e.g. PHONE, LOCATION, EDUCATION) and their completion ring.
+
+| Element                  | Token                                              |
+| ------------------------ | --------------------------------------------------- |
+| Missing field badge bg   | `bg-error-lightest`                                  |
+| Missing field badge text | `text-error`                                         |
+| Alert icon               | `text-error`                                         |
+| Completion ring fill     | `stroke-error` (`var(--color-error)`)                |
+| Completion ring track    | `stroke-error-light` (`var(--color-error-light)`)    |
 
 ---
 

@@ -145,27 +145,40 @@ export async function GET(request: NextRequest) {
 
 ### DB Queries
 
+**Correction (Feature 06):** the client's query builder is namespaced under
+`.database`, not exposed at the top level. Verified directly against
+`node_modules/@insforge/sdk/dist/client-DZHoCptg.d.ts`: `InsForgeClient` only
+declares `readonly database: Database`, `readonly storage: Storage`, etc. —
+there is no `.from()` on the client itself. `Database.from()` is what
+forwards to the real Postgrest query builder, so every call below is
+`insforge.database.from(...)`, never `insforge.from(...)`.
+
 ```typescript
 // Read
-const { data, error } = await insforge
+const { data, error } = await insforge.database
   .from("jobs")
   .select("*")
   .eq("user_id", user.id)
   .order("found_at", { ascending: false });
 
 // Insert
-const { data, error } = await insforge
+const { data, error } = await insforge.database
   .from("jobs")
   .insert({ user_id: user.id, title, company, match_score })
   .select()
   .single();
 
 // Update
-const { error } = await insforge
+const { error } = await insforge.database
   .from("jobs")
   .update({ company_research: dossier })
   .eq("id", jobId)
   .eq("user_id", user.id); // always scope to user
+
+// Upsert (e.g. a 1:1 row keyed by the authenticated user's id)
+const { error } = await insforge.database
+  .from("profiles")
+  .upsert({ id: user.id, ...fields }, { onConflict: "id" });
 ```
 
 **Rules:**
@@ -178,32 +191,35 @@ const { error } = await insforge
 
 ### Storage
 
+**Correction (Feature 06):** the installed SDK's `upload()` takes no options
+object at all — no `contentType`, no `upsert` flag. Verified directly against
+`node_modules/@insforge/sdk/dist/client-DZHoCptg.d.ts`:
+`upload(path: string, file: File | Blob): Promise<StorageResponse<StorageFileSchema>>`.
+`file` must be a `File`/`Blob`, never a raw `Buffer`. Same-path upload always
+overwrites in place (standard PUT semantics, per the SDK's own doc comment) —
+there's no separate upsert flag to pass, uploading to an existing key already
+behaves that way. `StorageFileSchema` already includes a resolved `url`, so
+there is no separate `getPublicUrl()` call needed after upload.
+
 ```typescript
-// Upload file
+// Upload file — file must be a File or Blob (e.g. a Server Action's
+// formData.get("resume"), or new Blob([buffer]) if you start from a Buffer)
 const { data, error } = await insforge.storage
   .from("resumes")
-  .upload(`${userId}/resume.pdf`, fileBuffer, {
-    contentType: "application/pdf",
-    upsert: true, // overwrites existing file
-  });
+  .upload(`${userId}/resume.pdf`, file);
 
-// Get public URL
-const { data } = insforge.storage
-  .from("resumes")
-  .getPublicUrl(`${userId}/resume.pdf`);
-
-const url = data.publicUrl;
+const url = data?.url;
 ```
 
 **Storage paths:**
 
-- Base resume: `resumes/{user_id}/resume.pdf`
+- Resume objects: `resumes/{user_id}/resume-{uuid}.pdf`
 
 **Rules:**
 
-- Always use `upsert: true` for base resume uploads — overwrites existing file
-- Always save the public URL back to the DB after upload
-- Never write files to disk — always upload buffer directly to storage
+- Uploading to the same path always overwrites the existing file — no separate upsert flag needed or available
+- Always save `data.url` back to the DB after upload — it's already resolved, no extra `getPublicUrl()` call
+- Never write files to disk — always upload a `File`/`Blob` directly to storage
 
 ---
 
@@ -733,13 +749,11 @@ const ResumePDF = ({ profile }: { profile: Profile }) => (
 // Generate buffer
 const buffer = await renderToBuffer(<ResumePDF profile={profile} />)
 
-// Upload directly to InsForge Storage
+// Upload to InsForge Storage — upload() takes a File/Blob, not a raw Buffer
+// (see the Storage section's Feature 06 correction), so wrap it first
 await insforge.storage
   .from('resumes')
-  .upload(`${userId}/resume.pdf`, buffer, {
-    contentType: 'application/pdf',
-    upsert: true
-  })
+  .upload(`${userId}/resume.pdf`, new Blob([buffer], { type: 'application/pdf' }))
 ```
 
 **Supported CSS properties:**
@@ -751,8 +765,8 @@ Only use these — others are silently ignored:
 - Server-side only — never import in client components
 - Always use `renderToBuffer` — not `renderToStream` or `PDFDownloadLink`
 - PDF generation only in `app/api/resume/` routes
-- Generated buffer uploaded directly to InsForge Storage — never written to disk
-- Always save public URL to DB after upload
+- Generated buffer wrapped in a `Blob` and uploaded directly to InsForge Storage — never written to disk
+- Always save the resolved storage URL (`data.url`) to DB after upload; the `resumes` bucket is private, so exposing that URL to a client requires a server-side ownership check first.
 
 ---
 

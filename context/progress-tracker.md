@@ -7,8 +7,8 @@ Update this file after every completed feature. Any AI agent reading this should
 ## Current Status
 
 **Phase:** Phase 2 — Profile Page
-**Last completed:** 04 Database Schema
-**Next:** 05 Profile Page — Full UI
+**Last completed:** 06 Profile Save Logic
+**Next:** 07 AI Profile Extraction from Resume
 
 ---
 
@@ -23,8 +23,8 @@ Update this file after every completed feature. Any AI agent reading this should
 
 ### Phase 2 — Profile Page
 
-- [ ] 05 Profile Page — Full UI
-- [ ] 06 Profile Save Logic
+- [x] 05 Profile Page — Full UI
+- [x] 06 Profile Save Logic
 - [ ] 07 AI Profile Extraction from Resume
 - [ ] 08 Resume PDF Generation from Profile
 
@@ -110,8 +110,21 @@ Update this file after every completed feature. Any AI agent reading this should
 - **Verified end-to-end**, not just via the admin MCP path: ran a real query through the app's actual `@insforge/sdk` client using the public `NEXT_PUBLIC_INSFORGE_URL` + anon key from `.env.local` (the same config `lib/insforge-client.ts` uses) — `select()` on `profiles` returned `{ data: [], error: null }` with no session, confirming RLS blocks anonymous reads correctly rather than erroring or leaking rows.
 - `jobs.company_research`, `agent_logs.job_id`, and other nullable columns match architecture.md exactly — no column list drift from what `/architect` specified.
 
+### 05 Profile Page — Full UI
+
+- Built pixel-by-pixel against `context/designs/profile.png` (source of truth per ui-rules.md), not build-plan.md's text description — the approved design has **no Cover Letter Tone field** in Job Preferences, unlike build-plan.md's description and architecture.md's `profiles.cover_letter_tone` column. Left it out of the UI entirely (input coverage for this feature is "what the design shows"); the DB column stays reserved for whenever a later feature actually surfaces it.
+- Two new tokens added to `ui-tokens.md` / `globals.css` — `--color-error-light: #ffe2e2` (completion ring track) and `--color-error-lightest: #fef2f3` (missing-field badge background) — sampled directly from the design PNG. Neither existed before; the existing `--color-error` (#ef4444) already matched the ring fill and badge text/icon exactly, so that one was reused as-is.
+- No shadcn/ui components used — followed Features 01/02's established pattern (hand-rolled Tailwind matching ui-tokens.md/ui-rules.md exactly) rather than introducing shadcn now, since nothing in the codebase uses it yet and `components/ui/` is reserved for it per architecture.md's system boundaries. Revisit if a future feature actually needs shadcn primitives.
+- Extracted five reusable, non-exported-elsewhere components under `components/profile/` beyond architecture.md's four (`ProfileForm`, `ResumeUpload`, `CompletionIndicator` — `ResumePreview` deferred, see below): `TextField`, `TextAreaField`, `SelectField` (generic field chrome, reused ~16 times), `TagInput` (shared by Skills + Industries), `WorkExperienceRoleCard` (one role, rendered up to 3 times). Same pattern as Feature 01 adding `CtaButtons.tsx`/`Testimonial.tsx` beyond the original folder plan — extracted because the alternative was hand-copying the same field markup a dozen-plus times in one file.
+- `ResumePreview.tsx` (listed in architecture.md's folder plan) **not built** — the design has no "resume already uploaded" visual state to build against, and build-plan.md Feature 05 only describes the empty upload state. Deferred to whichever of Feature 07/08 first needs to render an uploaded/generated resume.
+- Work Experience list is fully interactive (add up to 3 roles, remove any role once more than one exists) even though the design's mock only shows one role — the "+ Add role" control the design does show has no purpose if roles can't actually be added and removed. The remove (trash icon) affordance itself isn't in the design; added it because the design has no way to build a role-removal UI reference for something it never shows more than one of.
+- All profile state is local `useState`, seeded with the design's own mock values (Faizan Ali / Vercel / etc.) verbatim — no InsForge reads/writes yet (Feature 06), so the Save Profile and Generate Resume from Profile buttons render but do nothing yet.
+- Verified with `npm run build` (typecheck + production build, both clean) and `npm run lint` (no warnings). Visual comparison against the design was done by hand (pixel-sampling the design PNG with PIL for exact colors/positions) rather than a rendered screenshot diff — this sandbox has no headless browser (`chromium-cli`/Playwright/Chromium all unavailable) to drive the real `/profile` route, which is also behind `proxy.ts` auth and has no session to satisfy in this environment. Confirmed the route renders correctly (200, expected section text present, no error markers) via a temporary unauthenticated preview route that was deleted before finishing.
+
 ---
 
 ## Notes
 
 _Add notes here as the build progresses — workarounds, patterns, anything that differs from the context files._
+
+- **`app/dashboard/page.tsx` is a placeholder, not Feature 14.** Added out of sequence, at the user's explicit request, only so the OAuth login flow (which redirects to `/dashboard` per architecture.md) doesn't 404 while testing Feature 05. It's a single static card ("Dashboard coming soon" + a link to `/profile`) — no stats bar, no recent activity, no analytics, no `Navbar`-aware auth state. **Do not treat Phase 5 as started.** When Feature 14 is actually built, this file gets replaced wholesale, not extended.
