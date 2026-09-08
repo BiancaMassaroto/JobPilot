@@ -180,26 +180,28 @@ Build the complete Find Jobs page UI with mock data. No logic yet.
 
 Agent calls Adzuna API to find jobs matching user's search criteria, scores them against user profile, saves to DB.
 
+**Decision finalized (`/architect`, 2026-09-08)** — see `architecture.md`'s "Adzuna Job Discovery" section for the full rationale. Summary (corrected from this paragraph's original GPT-4o-based draft — the project's provider switch, started in the Feature 08 decision, now also covers this feature):
+
 **Logic:**
 
-- POST /api/agent/find receives jobTitle and location from client
+- POST /api/agent/find receives jobTitle and location from client; this route is its own auth gate (`proxy.ts` doesn't cover `/api/*`)
+- Create agent_run record (`status: 'running'`) before calling Adzuna
 - Call Adzuna API:
   - GET https://api.adzuna.com/v1/api/jobs/{country}/search/1
   - params: what={jobTitle}, where={location}, results_per_page=10, app_id, app_key
-  - Detect country from location input — default to 'us'
-- For each job returned:
-  - Extract title, company, location, salary, description snippet, redirect_url
-  - GPT-4o scores job against user profile:
-    - matchScore — integer 0-100
-    - matchReason — one paragraph explanation
-    - matchedSkills — skills user has that job requires
-    - missingSkills — skills job requires that user lacks
-  - Save complete record to jobs table:
-    - source: 'search'
-    - run_id from agent_runs record
-    - All structured fields saved
-- Create agent_run record in DB
-- After all jobs saved — update agent_run with total count, return success message to frontend
+  - Detect country from location input via a small keyword map (us/gb/au/ca) — default to 'us'
+- Drop any result already saved for this user (same source_url) before scoring
+- Gemini (`@google/genai`, `gemini-3.6-flash`) scores every remaining job in **one batched call**, not one call per job (the shared free-tier quota is 20 requests/day — batching keeps this feature to 1 call per search):
+  - matchScore — integer 0-100
+  - matchReason — one paragraph explanation
+  - matchedSkills — skills user has that job requires
+  - missingSkills — skills job requires that user lacks
+- Save every job that is both new and successfully scored to the jobs table (no score-based filtering on what gets saved):
+  - source: 'search'
+  - run_id from agent_runs record
+  - All structured fields saved
+- Update agent_run with the saved-job count (`status: 'completed'`, or `'failed'` if the whole Adzuna or Gemini call errored out) — return `{ jobsFound, strongMatches }` to the frontend, where jobsFound is the saved count and strongMatches is how many of those score >= MATCH_THRESHOLD; both describe the same saved set, not two different counts
+- app/find-jobs/page.tsx reads real saved jobs (unpaginated) instead of Feature 09's mock data — Feature 11 still owns filter/sort/pagination
 
 **PostHog events:** `job_search_started`, `job_found`
 

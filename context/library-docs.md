@@ -278,16 +278,25 @@ type AdzunaJob = {
   salary_min?: number;
   salary_max?: number;
   salary_is_predicted: "0" | "1"; // "1" means salary is estimated
-  contract_type?: string;
+  contract_type?: "permanent" | "contract"; // permanent vs. fixed-term/contract — NOT full-time/part-time, see the Feature 10 correction below
+  contract_time?: "full_time" | "part_time"; // the field that actually carries full/part time
   created: string; // ISO date string
   category: { tag: string; label: string };
 };
 ```
 
+**Corrected (Feature 10 cross check, 2026-09-08) — `job_type` was mapped from the wrong field.** The original snippet below mapped `jobs.job_type` (CHECKed to `'fulltime' | 'parttime' | 'contract'`, see `architecture.md`'s Feature 04 migration) from `contract_type`, whose real values are `"permanent"`/`"contract"` — not `"fulltime"`/`"parttime"`. Adzuna's separate `contract_time` field is the one that actually returns `"full_time"`/`"part_time"`. Left uncorrected, any ordinary permanent listing (the common case) would write `job_type: "permanent"` and fail the CHECK constraint outright, silently dropping the job. Fixed in the mapping below: `contract_time` decides full-time vs part-time (defaulting to full-time when absent, since Adzuna doesn't always set it), and `contract_type === "contract"` overrides to `"contract"` when present (a fixed-term/contract listing, regardless of what `contract_time` says).
+
 ### Saving Jobs to DB
 
 ```typescript
 // Map Adzuna result to jobs table
+function mapAdzunaJobType(job: AdzunaJob): "fulltime" | "parttime" | "contract" {
+  if (job.contract_type === "contract") return "contract";
+  if (job.contract_time === "part_time") return "parttime";
+  return "fulltime";
+}
+
 const jobRecord = {
   user_id: userId,
   run_id: runId,
@@ -300,7 +309,7 @@ const jobRecord = {
   salary: job.salary_min
     ? `$${Math.round(job.salary_min / 1000)}k - $${Math.round(job.salary_max! / 1000)}k`
     : null,
-  job_type: job.contract_type || "fulltime",
+  job_type: mapAdzunaJobType(job),
   about_role: job.description, // Adzuna returns snippet — used as description
   match_score: scoredJob.matchScore,
   match_reason: scoredJob.matchReason,
@@ -316,7 +325,8 @@ const jobRecord = {
 - Never pass `where` if location is empty — omit the parameter entirely
 - `source` is always `'search'` for Adzuna jobs — never any other value
 - `salary_is_predicted: "1"` means Adzuna estimated the salary — this is normal
-- Adzuna description is a snippet — GPT-4o scores from it, not a full description
+- `job_type` is derived via `mapAdzunaJobType()` (`contract_time` for full/part time, `contract_type === "contract"` overrides to contract) — never map it from `contract_type` alone, its `"permanent"` value isn't a valid `job_type` and fails the DB's CHECK constraint
+- Adzuna description is a snippet — Gemini scores from it as of Feature 10 (`architecture.md`'s Adzuna Job Discovery decision), not a full description
 - Default country to `'us'` — support `gb`, `au`, `ca` as alternatives
 
 ---
@@ -407,7 +417,7 @@ try {
     action: "Click the About link in the navigation",
   });
 } catch (error) {
-  await logAgentError(jobId, null, error);
+  await logAgentError(userId, jobId, null, "Company research failed", error);
 }
 ```
 
@@ -562,7 +572,7 @@ const response = await openai.chat.completions.create({
 
 **Check first:** Check AGENTS.md for an installed Gemini skill. No Gemini SDK skill is installed as of this writing — use this file and the official Gemini API docs.
 
-**Scope note (Feature 08 decision, `architecture.md`, correcting Feature 07's original note):** Gemini is this project's provider for every AI feature, not just extraction. Feature 07 (extraction) and Feature 08 (resume generation) both use it. Features 10/13/17 still document GPT-4o below, pending their own `/develop` pass — the project-wide switch should carry into each when it's actually built, per architecture.md's Feature 08 decision, item 1.
+**Scope note (Feature 08 decision, `architecture.md`, correcting Feature 07's original note; updated at Feature 10):** Gemini is this project's provider for every AI feature, not just extraction. Feature 07 (extraction), Feature 08 (resume generation), and now Feature 10 (job match scoring — one batched call per search, see architecture.md's Adzuna Job Discovery decision) all use it. Features 13/17 still document GPT-4o below, pending their own `/architect` pass — the project-wide switch should carry into each when it's actually built, per architecture.md's Feature 08 decision, item 1.
 
 ### Client Setup (Server-Only)
 
@@ -619,7 +629,7 @@ const result = JSON.parse(response.text);
 
 ## OpenAI GPT-4o
 
-**Not currently used anywhere in this project (Feature 08 decision, `architecture.md`, item 1) — kept below for Features 10/13/17 to reconsider when each is built,** since the project switched to Gemini for every AI feature during Feature 08's build. `openai` is not an approved dependency (see `code-standards.md`); if a future feature reconsiders GPT-4o specifically, that reasoning belongs in that feature's own `/architect` decision, not assumed from this section.
+**Not currently used anywhere in this project (Feature 08 decision, `architecture.md`, item 1) — kept below for Features 13/17 to reconsider when each is built,** since the project switched to Gemini for every AI feature during Feature 08's build, and Feature 10 confirmed the same switch for job match scoring at its own `/architect` pass (2026-09-08). `openai` is not an approved dependency (see `code-standards.md`); if a future feature reconsiders GPT-4o specifically, that reasoning belongs in that feature's own `/architect` decision, not assumed from this section.
 
 **Check first:** Check AGENTS.md for an installed OpenAI skill. The skill will have the latest API patterns and model capabilities.
 

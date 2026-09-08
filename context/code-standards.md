@@ -172,13 +172,14 @@ export async function discoverJobs(
   jobTitle: string,
   location: string,
   profile: Profile,
+  userId: string,
   runId: string,
 ): Promise<{ success: boolean; jobs?: Job[]; error?: string }> {
   try {
     // implementation
     return { success: true, jobs };
   } catch (error) {
-    await logAgentError(runId, null, error);
+    await logAgentError(userId, runId, null, "Agent operation failed", error);
     return { success: false, error: String(error) };
   }
 }

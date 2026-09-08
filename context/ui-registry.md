@@ -24,8 +24,9 @@ After building any component — update this file with the component name, file 
 
 - Root: `min-h-16 w-full bg-surface px-6 flex flex-wrap items-center justify-between`
 - Logo: `public/logo.png` via `next/image`, `className="h-9 w-auto"`
-- Nav link active: `text-sm font-medium text-accent`
-- Nav link inactive: `text-sm font-medium text-text-dark hover:text-text-primary`
+- **Nav links carry an icon + active underline (added Feature 09, confirmed against `dashboard.png`/`profile.png`/`find-jobs.png` — all three agree; ui-rules.md's "no underline" line was stale and is now corrected):** `LayoutGrid` (Dashboard) / `Search` (Find Jobs) / `User` (Profile), lucide, `h-4 w-4`, `aria-hidden`
+- Nav link active: `flex items-center gap-2 border-b-2 pb-1 text-sm font-medium border-accent text-accent`
+- Nav link inactive: `flex items-center gap-2 border-b-2 pb-1 text-sm font-medium border-transparent text-text-dark hover:text-text-primary`
 - Takes `isAuthenticated?: boolean` (default `false`) — server-computed and passed by each caller, not resolved client-side, so there's no logged-in/out flash. `app/page.tsx` renders it with no prop (always logged out, since `/` redirects away when a session exists); `app/dashboard/page.tsx` and `app/profile/page.tsx` pass `isAuthenticated` true (both routes are gated by `proxy.ts`, `profile/page.tsx` derives it from the `user` it already fetches).
 - CTA slot swaps on `isAuthenticated`:
   - Logged out — "Start for free" `Link`: `rounded-md bg-text-slate px-4 py-2 text-sm font-medium text-accent-foreground`
@@ -160,6 +161,60 @@ After building any component — update this file with the component name, file 
 - Type/Title row uses `pr-8` on the grid wrapper (not on the individual fields) so neither field's content sits under the absolutely-positioned remove button
 - "Funded / scholarship (bolsa)" checkbox: same `accent-accent` pattern as Work Experience's "Currently working here" — a flat label + native checkbox, no custom SVG
 - Section itself (in `ProfileForm.tsx`) only renders when `profile.experienceLevel === "student"` — the "Add entry" control and the whole card list disappear together when the user picks a different experience level, they don't just hide the button
+
+### SearchControls (find-jobs page)
+
+`components/find-jobs/SearchControls.tsx` — **Client Component as of Feature 10** (was a Server Component with no submit logic through Feature 09). Controlled `jobTitle`/`location` inputs, a plain `onSubmit` fetch handler (`POST /api/agent/find`, not a Server Action — architecture.md's Invariants already rule that out for agent-calling code), `isSearching`/`error`/`result` local state, `router.refresh()` on success so the Server Component tree below re-renders with the freshly saved jobs. Initial state renders no banner at all (same "renders nothing until there's something to show" precedent as `ResumePreview.tsx`), not the old hardcoded always-visible mock text.
+
+- Root card: `flex flex-col gap-4 rounded-2xl border border-border bg-surface p-6 shadow-card`
+- Field grid: `grid grid-cols-1 gap-4 md:grid-cols-[1fr_1fr_auto] md:items-end`
+- Label: `text-xs font-medium uppercase text-text-secondary` — same chrome as `profile/TextField.tsx`'s label, not the component itself (this isn't a form-validation context)
+- Job Title input has a leading `Search` (lucide) icon (`absolute left-3 ... text-text-muted`); Location input does not — matches the design exactly, not a missed pattern
+- Input chrome: `w-full rounded-md border border-border bg-surface px-3 py-2 text-sm text-text-primary placeholder:text-text-muted focus:border-accent focus:ring-1 focus:ring-accent focus:outline-none` (Job Title adds `pl-9` for the icon)
+- Find Jobs button: primary style + `Search` (lucide) icon, `flex items-center justify-center gap-2 rounded-md bg-accent px-4 py-2 text-sm font-medium text-accent-foreground`, `disabled={isSearching}` (same `disabled`+opacity treatment as `ResumeUpload.tsx`'s Extract button), label swaps to "Searching…" while pending
+- Success banner (only when a search just completed with no error): `flex items-center gap-2 rounded-lg bg-success-lightest px-4 py-3 text-sm font-medium text-success-foreground` with `Sparkles` (lucide) `h-4 w-4 text-success-alt` — colors pixel-verified against the design (icon `#00BC7D`, text `#007A55`, bg `#ECFDF5`, all existing tokens). Copy branches three ways on the route's `adzunaResultCount`/`jobsFound` (architecture.md's Adzuna Job Discovery decision, Decision 8) — real zero results, all-duplicates, or the normal "Found N jobs and saved M strong matches."
+- Error state: `text-sm text-error`, same token as every other inline error in this app (not the success-banner treatment)
+
+### JobsListSection (find-jobs page)
+
+`components/find-jobs/JobsListSection.tsx` — Client Component, the only stateful piece on this page. Owns `sortBy` (`useState<SortOption>`, default `"matchScore"`) and derives `sortedJobs` via `useMemo(() => sortJobs(jobs, sortBy), [jobs, sortBy])`. Assembles the one bordered card (`overflow-hidden rounded-2xl border border-border bg-surface shadow-card`) containing `JobFilters` → (`JobsTable` + `JobsPagination`, or `JobsEmptyState` when `jobs.length === 0`). `app/find-jobs/page.tsx` stays an (now `async`) Server Component, but as of Feature 10 it passes real DB-backed jobs (`fromJobRow` over an unpaginated `jobs` read, `types/index.ts`'s `Job`) — `MOCK_JOBS`/`mock-jobs.ts` are gone.
+
+- **`JobsEmptyState`** — not exported, local to this file, added directly per a screenshot the engineer shared. Shown in place of the table and pagination when there are no saved jobs yet (before the first search, or after one that saved nothing new) — an empty `<table>` with real pagination text ("Showing 1 to 0...") would have been misleading rather than just plain. `flex flex-col items-center gap-4 px-6 py-16 text-center`: a `Building2` (lucide) icon in a `flex h-12 w-12 items-center justify-center rounded-full bg-surface-secondary` badge (same icon and sizing convention as `ResumeUpload.tsx`'s upload badge, and the same icon `JobsTable`'s company cell already uses), `text-text-muted`; caption below `text-sm text-text-secondary`: "No jobs found yet. Run a search to get started."
+
+### sortJobs (find-jobs page, utility)
+
+`components/find-jobs/sort-jobs.ts` — `SortOption = "matchScore" | "newest" | "oldest"` + `sortJobs(jobs, sortBy)`. Semantics match build-plan.md's Feature 11 spec exactly (`matchScore` descending, `newest`/`oldest` by `foundAt`), applied client-side. `Job` now imported from `@/types` (moved off `mock-jobs.ts` at Feature 10 — see the `Job`/`JobSource` entry below). Real DB wiring for filter/pagination is still Feature 11's — this file only sorts.
+
+### JobFilters (find-jobs page)
+
+`components/find-jobs/JobFilters.tsx` — Client Component (added `"use client"` 2026-09-08 to wire the sort select's `onChange`; was a Server Component at first build). Top strip of the jobs-list card (not its own card — sits inside the same bordered container as `JobsTable`/`JobsPagination`, separated by `border-b`). Takes `sortBy: SortOption` + `onSortChange: (sortBy: SortOption) => void` from `JobsListSection`.
+
+- Root: `flex flex-col gap-3 border-b border-border px-6 py-4 md:flex-row md:items-center md:justify-between`
+- Text filter: borderless input (`border-transparent bg-transparent`) with a leading `Search` icon, flush inside the card — no boxed input here, unlike `SearchControls`. Still uncontrolled/no logic (not asked for yet).
+- "All Matches" `<select>` (all/high/low): still uncontrolled (`defaultValue`, no `onChange`) — filter wiring wasn't requested, only sort. Same chrome as `profile/SelectField.tsx`: `appearance-none rounded-md border border-border bg-surface py-2 pr-9 pl-3 text-sm font-medium text-text-primary` + absolutely positioned `ChevronDown`
+- "Match Score" `<select>` (matchScore/newest/oldest): **controlled** — `value={sortBy}`, `onChange={(e) => onSortChange(e.target.value as SortOption)}`, same chrome as above
+
+### JobsTable (find-jobs page)
+
+`components/find-jobs/JobsTable.tsx` — Server Component, real `<table>` (semantic, per ui-rules.md's Table section). Takes `jobs: Job[]` (`Job`/`JobSource` now live in `@/types`, moved off `mock-jobs.ts` at Feature 10 since the type has two real consumers now — the page's DB read and the search route's insert path).
+
+- `<thead>` row: `border-b border-border`, header cells `px-6 py-3 text-xs font-medium tracking-wide text-text-secondary uppercase`
+- `<tbody>` rows: `border-b border-border last:border-b-0 hover:bg-surface-secondary`, cells `px-6 py-4`
+- Company cell: `Building2` (lucide) in a `flex h-9 w-9 items-center justify-center rounded-xl border border-border bg-surface-tertiary` icon badge + `text-sm font-semibold text-text-primary`
+- Role/Salary cells: `text-sm text-text-primary`; Date Found cell: `text-sm text-text-secondary`. Salary falls back to the literal string `"Not disclosed"` (`lib/job-transform.ts`) when Adzuna returns no `salary_min` — no design mock covers this state.
+- **`SourceBadge`** — not exported, local to this file. **Not present in `find-jobs.png`; added directly per the engineer's request** despite the design's omission (build-plan.md's original text did list a Source column). Reuses this page's own existing pill-badge pattern rather than inventing new colors: `inline-flex items-center rounded-full px-2.5 py-1 text-xs font-medium`, `search` → `bg-accent-light text-accent` (same pairing as ui-tokens.md's `Tailored` status badge), `url` → `bg-surface-secondary text-text-secondary` (same pairing as `Low Match`). `source` is always `"search"` for jobs this feature saves — `"url"` stays reserved for manual URL import, out of scope.
+- **`MatchScoreBar`** — not exported, local to this file (same "unexported local helper" pattern as `LoginCard.tsx`'s brand SVGs): `h-1 w-24 overflow-hidden rounded-full bg-border-light` track with an absolutely-scaled `h-full rounded-full` fill (`style={{ width: `${score}%` }}`), color by tier per ui-tokens.md's corrected Match Score Colors table (`bg-success-alt` ≥90, `bg-info-medium` ≥80, `bg-warning` ≥50, `bg-text-muted` below); percentage number itself is **not** tier-colored — `text-sm font-semibold text-text-primary`, matching the design (only the bar is colored)
+
+### JobsPagination (find-jobs page)
+
+`components/find-jobs/JobsPagination.tsx` — Server Component, with the result range derived from the persisted job count passed by `JobsListSection`. No page-range-generation logic yet — literal JSX buttons, since the real pagination algorithm is Feature 11's decision, not invented here.
+
+- Root: `flex flex-col gap-3 border-t border-border px-6 py-4 sm:flex-row sm:items-center sm:justify-between`
+- Result count text: `text-sm text-text-secondary` with bold `text-text-primary` numbers
+- Page buttons: `rounded-lg border border-border bg-surface px-3 py-1.5 text-sm font-medium text-text-primary hover:bg-surface-secondary`
+- Active page (`1`): `rounded-lg border border-accent-light bg-accent-muted px-3 py-1.5 text-sm font-medium text-accent`
+- `Previous` (disabled, page 1): `text-text-muted disabled:cursor-not-allowed`, same border/bg as other page buttons
+- Ellipsis: plain `text-sm text-text-muted`, no border/box
 
 ### ProfileForm (profile page)
 

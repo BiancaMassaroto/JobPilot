@@ -86,3 +86,42 @@ export type ExtractableProfileFields = {
   education: EducationInfo;
   experienceLevel: ExperienceLevel | null;
 };
+
+// Moved here from components/find-jobs/mock-jobs.ts at Feature 10 (Adzuna
+// Job Discovery) — now has two real consumers (app/find-jobs/page.tsx's DB
+// read via lib/job-transform.ts, and this feature's own insert path), so it
+// stops being a find-jobs-scoped type. Field names (company/role/matchScore/
+// salaryEstimate/foundAt/source) were chosen in Feature 09 specifically to
+// map cleanly onto the jobs table's company/title/match_score/salary/
+// found_at/source columns.
+export type JobSource = "search" | "url";
+
+export type Job = {
+  id: string;
+  company: string;
+  role: string;
+  matchScore: number;
+  salaryEstimate: string;
+  foundAt: Date;
+  source: JobSource;
+};
+
+// POST /api/agent/find request body (architecture.md's Adzuna Job Discovery
+// decision, Decision 9d). location is optional — a missing key is coerced
+// to "" by the route before it reaches detectAdzunaCountry().
+export type FindJobsRequestBody = {
+  jobTitle: string;
+  location?: string;
+};
+
+// POST /api/agent/find success response data (Decisions 6 and 8).
+// jobsFound/strongMatches are both post-dedup, post-scoring saved counts;
+// adzunaResultCount is the raw pre-dedup count, used only so the client can
+// pick the right zero-result copy (Decision 8) — never stored anywhere.
+export type FindJobsResponseData = {
+  jobsFound: number;
+  strongMatches: number;
+  adzunaResultCount: number;
+  jobTitle: string;
+  location: string;
+};

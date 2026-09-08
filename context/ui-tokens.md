@@ -163,14 +163,14 @@ Used for: primary buttons, active nav items, match score bars, tailored badge, f
 
 ### Match Score Colors
 
-Match score bars and indicators use gradient stops based on score range:
+Match score bars use fill colors based on score range. Corrected 2026-09-08 (Feature 09) — pixel-sampled directly from `find-jobs.png`'s six sample rows; the ranges previously written here (a 90/70/50 split, both top tiers green) didn't match the delivered design, which uses three distinct colors:
 
-| Score Range | Color  | Token                                  |
-| ----------- | ------ | -------------------------------------- |
-| 90-100%     | Green  | `text-success` / `bg-success-lightest` |
-| 70-89%      | Green  | `text-success` / `bg-success-light`    |
-| 50-69%      | Orange | `text-warning`                         |
-| Below 50%   | Gray   | `text-text-muted`                      |
+| Score Range | Color  | Token                                                    |
+| ----------- | ------ | --------------------------------------------------------- |
+| 90-100%     | Green  | `bg-success-alt` / `text-success-alt`                     |
+| 80-89%      | Blue   | `bg-info-medium` / `text-info-medium`                     |
+| 50-79%      | Orange | `bg-warning` / `text-warning`                              |
+| Below 50%   | Gray   | `bg-text-muted` / `text-text-muted` (no sample at this range) |
 
 ### Skills Badges
 

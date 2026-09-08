@@ -4,7 +4,7 @@
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
-import { LogOut, Menu, X } from "lucide-react";
+import { LayoutGrid, LogOut, Menu, Search, User, X, type LucideIcon } from "lucide-react";
 import { useState } from "react";
 
 // 2. Internal imports
@@ -14,16 +14,20 @@ import { SignOutButton } from "@/components/auth/SignOutButton";
 type NavLink = {
   label: string;
   href: string;
+  icon: LucideIcon;
 };
 
 type Props = {
   isAuthenticated?: boolean;
 };
 
+// Icon + active-item underline per context/designs/dashboard.png,
+// profile.png, and find-jobs.png (all three agree — see progress-tracker.md's
+// Feature 09 notes; ui-rules.md's "no underline" line is corrected to match).
 const NAV_LINKS: NavLink[] = [
-  { label: "Dashboard", href: "/dashboard" },
-  { label: "Find Jobs", href: "/find-jobs" },
-  { label: "Profile", href: "/profile" },
+  { label: "Dashboard", href: "/dashboard", icon: LayoutGrid },
+  { label: "Find Jobs", href: "/find-jobs", icon: Search },
+  { label: "Profile", href: "/profile", icon: User },
 ];
 
 // 4. Component
@@ -52,16 +56,18 @@ export function Navbar({ isAuthenticated = false }: Props) {
       <nav className="hidden md:flex items-center gap-8">
         {NAV_LINKS.map((link) => {
           const isActive = pathname === link.href;
+          const Icon = link.icon;
           return (
             <Link
               key={link.href}
               href={link.href}
-              className={
+              className={`flex items-center gap-2 border-b-2 pb-1 text-sm font-medium ${
                 isActive
-                  ? "text-sm font-medium text-accent"
-                  : "text-sm font-medium text-text-dark hover:text-text-primary"
-              }
+                  ? "border-accent text-accent"
+                  : "border-transparent text-text-dark hover:text-text-primary"
+              }`}
             >
+              <Icon aria-hidden="true" className="h-4 w-4" />
               {link.label}
             </Link>
           );
@@ -106,18 +112,20 @@ export function Navbar({ isAuthenticated = false }: Props) {
         >
           {NAV_LINKS.map((link) => {
             const isActive = pathname === link.href;
+            const Icon = link.icon;
             return (
               <Link
                 key={link.href}
                 href={link.href}
                 aria-current={isActive ? "page" : undefined}
-                className={`block rounded-md px-3 py-2 text-sm font-medium ${
+                className={`flex items-center gap-2 rounded-md px-3 py-2 text-sm font-medium ${
                   isActive
                     ? "text-accent"
                     : "text-text-dark hover:bg-surface-secondary hover:text-text-primary"
                 }`}
                 onClick={() => setIsMobileMenuOpen(false)}
               >
+                <Icon aria-hidden="true" className="h-4 w-4" />
                 {link.label}
               </Link>
             );

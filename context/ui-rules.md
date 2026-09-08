@@ -29,11 +29,11 @@ The `--font-sans` variable is already declared in `@theme` in globals.css. Apply
 
 ## Navbar
 
-Three nav items: Dashboard, Find Jobs, Profile.
+Three nav items: Dashboard, Find Jobs, Profile — each paired with an icon (grid/search/person).
 
-- Active item: `color: #7C5CFC`, font-weight 500, 14px
-- Inactive item: `color: #4A5565`, font-weight 500, 14px
-- No underline — active state is color change only
+- Active item: `color: #7C5CFC`, font-weight 500, 14px, 2px underline in the same accent color
+- Inactive item: `color: #4A5565`, font-weight 500, 14px, transparent underline (reserves the same space so layout doesn't shift)
+- Corrected 2026-09-08 (Feature 09): confirmed consistently across `dashboard.png`, `profile.png`, and `find-jobs.png` — active state is color **and** a bottom underline, not color alone as previously written here
 - Navbar always white background, full viewport width
 
 ---
@@ -163,11 +163,12 @@ border-radius: 9999px
 background track: #E7EAF3
 ```
 
-Fill color by score:
+Fill color by score (corrected 2026-09-08, Feature 09 — pixel-sampled from `find-jobs.png`; the ranges previously written here didn't match the delivered design):
 
-- 80-100%: `#10B981` (green)
-- 60-79%: `#61A8FF` (blue)
-- Below 60%: `#FF8904` (orange)
+- 90-100%: `#00BC7D` (`--color-success-alt`, green)
+- 80-89%: `#2B7FFF` (`--color-info-medium`, blue)
+- 50-79%: `#FF8904` (`--color-warning`, orange)
+- Below 50%: `--color-text-muted` (gray — no sample in the design at this range, kept from the prior doc's lowest tier)
 
 ---
 
