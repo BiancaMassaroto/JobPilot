@@ -1,5 +1,6 @@
 // 1. External imports
 import { Building2 } from "lucide-react";
+import Link from "next/link";
 
 // 2. Internal imports
 import { formatRelativeTime } from "@/lib/utils";
@@ -38,8 +39,13 @@ export function JobsTable({ jobs }: Props) {
       </thead>
       <tbody>
         {jobs.map((job) => (
-          <tr key={job.id} className="border-b border-border last:border-b-0 hover:bg-surface-secondary">
+          <tr key={job.id} className="relative border-b border-border last:border-b-0 hover:bg-surface-secondary">
             <td className="px-6 py-4">
+              <Link
+                href={`/find-jobs/${job.id}`}
+                className="absolute inset-0 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+                aria-label={`View details for ${job.role} at ${job.company}`}
+              />
               <div className="flex items-center gap-3">
                 <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-border bg-surface-tertiary">
                   <Building2 className="h-4 w-4 text-text-secondary" />

@@ -106,6 +106,35 @@ export type Job = {
   source: JobSource;
 };
 
+// jobs.job_type's CHECK constraint (architecture.md's Constraints, Row
+// Level Security & Migration section) — nullable, since Adzuna doesn't
+// always resolve a contract type (see mapAdzunaJobType's callers).
+export type JobType = "fulltime" | "parttime" | "contract";
+
+// Feature 12 (Job Details Page) — a separate, richer shape from `Job`
+// above rather than extending it: the find-jobs table and this page need
+// disjoint slices of the same `jobs` row, and `Job`/`fromJobRow` already
+// have a real consumer (JobsTable) that shouldn't have to carry fields it
+// never renders. Field names map onto the jobs table columns the same way
+// `Job`'s do. companyResearch is intentionally omitted — Feature 12 only
+// ever renders the Company Research card's empty state (build-plan.md),
+// Feature 13 owns shaping and displaying a populated dossier.
+export type JobDetail = {
+  id: string;
+  title: string;
+  company: string;
+  location: string | null;
+  salaryEstimate: string;
+  jobType: JobType | null;
+  foundAt: Date;
+  aboutRole: string | null;
+  matchScore: number;
+  matchReason: string | null;
+  matchedSkills: string[];
+  missingSkills: string[];
+  externalApplyUrl: string | null;
+};
+
 // POST /api/agent/find request body (architecture.md's Adzuna Job Discovery
 // decision, Decision 9d). location is optional — a missing key is coerced
 // to "" by the route before it reaches detectAdzunaCountry().

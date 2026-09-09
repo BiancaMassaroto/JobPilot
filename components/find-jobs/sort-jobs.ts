@@ -1,6 +1,8 @@
 // Sort semantics match build-plan.md's Feature 11 spec exactly (Match Score
-// descending, Newest/Oldest by found_at) — applied client-side against the
-// Feature 09 mock data ahead of Feature 10/11's real DB wiring.
+// descending, Newest/Oldest by found_at) — applied client-side, over real
+// DB-backed jobs as of Feature 10/11 (see filter-jobs.ts/paginate-jobs.ts
+// for the sibling filter/search/pagination helpers this now runs alongside
+// in JobsListSection's pipeline).
 
 import type { Job } from "@/types";
 

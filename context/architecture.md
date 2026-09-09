@@ -1006,6 +1006,8 @@ System prompt: "You are a job matching assistant. Score each listed job against 
 
 **9. Whole-run failure — the Adzuna call itself fails, or Gemini fails outright (Decision 8's second bullet).** Confirmed with the engineer: `agent_runs` is marked `status: 'failed'`, `completed_at: now()`; the full error is logged via `logAgentError()` (Decision 9a) with `level: 'error'`, `job_id: null` and to the server console with the `[api/agent/find]` prefix (`code-standards.md`'s Error Handling convention); the client gets a single generic message, "Couldn't search for jobs right now. Please try again." — never the raw Adzuna/Gemini error text (`code-standards.md`: "user-facing errors must never expose raw internals"). No jobs are saved from a run that fails at either the Adzuna or the whole-batch-Gemini stage.
 
+**Corrected live, 2026-09-09 — this path fired for a real, non-code reason.** The engineer hit this exact branch on a real search: `agent_logs` showed Gemini's batched scoring call returned a live `503 UNAVAILABLE` — `"This model is currently experiencing high demand... Please try again later."` Confirmed the failure handling above worked correctly end to end (`agent_runs.status: 'failed'`, generic message, no jobs saved) — this is not a defect in this decision. Since Gemini's own message calls a `503` explicitly transient, added `withGeminiRetry()` (`lib/gemini.ts` — see `library-docs.md`'s Gemini section) as a thin wrapper around the `generateContent()` call in `agent/matcher.ts`: retries a `503` up to twice with a short delay before this Decision 9 path ever triggers. A `429` (Decision 12's Follow-up quota cap) is deliberately not retried — it would just waste another request against the same exhausted daily cap. This only reduces how often a transient blip reaches Decision 9; the failure contract itself (`status: 'failed'`, generic message, `502`) is unchanged for a genuine outright failure.
+
 **9a. `logAgentError()` — the shared logging helper this decision (and `code-standards.md`'s own Agent Code example, and `library-docs.md`'s Company Research pattern) already assumes exists, made explicit at cross check.** No file implementing it exists yet in this codebase (`agent/` doesn't exist at all before this feature). New `lib/agent-logs.ts`: `logAgentError(userId: string, runId: string, jobId: string | null, message: string, error: unknown): Promise<void>` — inserts one row into `agent_logs` (`level: 'error'`, the given `user_id`/`run_id`/`job_id`, `message` plus `String(error)`), wrapped in its own try/catch that only `console.error`s on failure (a logging failure must never itself throw and mask the original error). `userId` is required because `agent_logs.user_id` is `NOT NULL`; `runId` is also required, not nullable — every call site in this feature (Decisions 8, 8a, 9) already has both a real authenticated user and a real `agent_runs` row by the time it logs; the one case with no run yet (Decision 9c) is exactly why that branch bypasses this helper entirely rather than being passed a `null`.
 
 **9b. HTTP status codes, named explicitly (cross check finding — none were pinned beyond Decision 10's `401`).** Matches Feature 08's precedent (the closest analog: a route that also gates on auth, a data guard, and an AI call) rather than a flat `500` for everything: `401` — no session (Decision 10). `400` — missing/empty `jobTitle`, or the Decision 2a minimal-profile guard. `502` — the Adzuna call or the whole-batch Gemini call fails outright (Decision 9): a failure from an upstream service, not this server's own bug. `500` — reserved for a genuinely unexpected internal error (e.g. the `agent_runs` insert itself, Decision 9c) rather than a named upstream failure.
@@ -1057,3 +1059,59 @@ System prompt: "You are a job matching assistant. Score each listed job against 
 - [ ] The shared Gemini free-tier quota (20 requests/day per model, already flagged in Features 07/08) is now touched by a third feature. Batching (Decision 2) keeps this feature's own usage to 1 call per search instead of up to 10, but the quota is still shared across extraction, resume generation, and every job search — upgrading the key's billing plan is more urgent now than when it was first flagged, not less.
 - [ ] Country detection (Decision 4) is a documented, imperfect heuristic — revisit only if a real user hits a wrong-country result in practice (e.g. an ambiguous shared city name), not preemptively.
 - [ ] A race between two concurrent searches for the same listing (Decision 5) could both pass the dedup check before either insert lands — accepted as out of scope, same class of gap as Feature 04's storage isolation note.
+
+---
+
+## Filter + Sort + Pagination (Feature 11 decision — `/architect`, 2026-09-09)
+
+`build-plan.md`'s Feature 11 entry names the four behaviors (All/High/Low Match filter, three sort orders, text search, 20-per-page pagination) but leaves open the one load-bearing call: whether these run client-side over the jobs the page already loads, or server-side via URL params re-querying the DB on every change (the phrasing Feature 10's Decision 12 used — "Feature 11 owns `.range()`-based pagination" — leaned server-side, but that was this project's own note, not a ratified engineer decision). Put to the engineer directly; the rest below are implementation calls that follow from that answer.
+
+**1. Client-side, over the jobs the page already loads — confirmed directly with the engineer.** `app/find-jobs/page.tsx` keeps Feature 10's unpaginated read of every job row for the current user; filter, search, sort, and pagination all run in the browser over that array. Rationale: this is a single-user, manually-triggered job list (`project-overview.md`'s Out of Scope: no scheduled agent runs) — the dataset one user accumulates from clicking "Find Jobs" stays small, so there's nothing here that needs a DB round trip to feel right. It also matches the client-side sort Feature 09 already shipped rather than introducing a second, URL-param-driven state model alongside it. **Not chosen:** server-side `.range()`/`.order()`/`.ilike()` queries driven by URL search params — scales indefinitely, but costs a page navigation (or a fetch + `router.refresh()`) on every filter/sort/search/page change, a separate count query, and debounce handling, for a scale this app doesn't have yet.
+
+**2. Filter values reuse the existing `MATCH_THRESHOLD` constant, never a second hardcoded `70`.** All Matches — every job. High Match — `matchScore >= MATCH_THRESHOLD`. Low Match — `matchScore < MATCH_THRESHOLD`. Same threshold Feature 10's Decision 6/7 already established and saved to `lib/utils.ts`; this feature imports it, it does not redefine it.
+
+**3. Text search — case-insensitive substring match against company OR role, applied on every keystroke, no debounce.** Since this runs client-side (Decision 1) against an already-in-memory array, there's no network call to debounce against; filtering an array of this size on every keystroke is negligible. Revisit only if Decision 1 itself is revisited.
+
+**4. Pipeline order and page reset.** Derive the visible rows as: filter (score threshold) → search (text) → sort → paginate (slice to the current page). Changing the filter, the search text, or the sort order resets the current page back to 1 — standard list UX, and it avoids landing on a page that no longer exists once the result count shrinks.
+
+**5. New pure helpers, colocated with their one consumer — same "don't promote until a second consumer needs it" precedent as `sort-jobs.ts` and the pre-Feature-10 `Job` type.**
+   - `components/find-jobs/filter-jobs.ts` (new) — `FilterOption = "all" | "high" | "low"`, `filterJobs(jobs, filterBy)` (Decision 2's threshold logic), `searchJobs(jobs, query)` (Decision 3's case-insensitive company/role match).
+   - `components/find-jobs/paginate-jobs.ts` (new) — `JOBS_PAGE_SIZE = 20` (`build-plan.md`'s fixed page size; scoped here since this page is still its only consumer, unlike `MATCH_THRESHOLD` which Feature 10 already shares across two features), `paginateJobs(jobs, page)` returning that page's slice, and `getPageNumbers(currentPage, totalPages)` for Decision 6 below.
+
+**6. Page-number/ellipsis rule — the one `JobsPagination` currently fakes as a hardcoded "1 2 3 … 8."** Always show page 1 and the last page; show the current page and its immediate neighbors (±1); collapse any gap larger than one page into a single `…`. When `totalPages <= 7`, show every page number and no ellipsis at all — collapsing a single hidden page behind "…" would be a pointless truncation of a small, cheap-to-render list.
+
+**7. `JobsListSection` stays the single owner of all interactive state — no new client components.** It already holds `sortBy` (Feature 09); this feature adds `filterBy`, `searchQuery`, and `currentPage` alongside it, all local `useState`, with the filtered → searched → sorted → paginated pipeline (Decision 4) derived via `useMemo`. Same "one small client island, not the whole page" pattern Feature 09 established — `app/find-jobs/page.tsx` stays an unchanged Server Component.
+
+**8. `JobFilters` becomes fully controlled.** Its "All Matches" select is currently `defaultValue="all"` with no `onChange`, and its text input has no state at all — both get the same controlled-prop treatment `sortBy`/`onSortChange` already uses: new `filterBy`/`onFilterChange` and `searchQuery`/`onSearchChange` props.
+
+**9. `JobsPagination` becomes real, driven by props instead of hardcoded markup.** New props: `currentPage`, `totalPages`, `totalCount` (the filtered/searched count, not the raw `jobs.length` Feature 10 wired it to), `onPageChange`, `onPrevious`, `onNext`. "Showing X to Y of Z results" — X/Y are the current page's real start/end index into the filtered set, Z is `totalCount`. Previous disables on page 1, Next disables on the last page. Page numbers render from Decision 6's `getPageNumbers()`, each clickable and the current one highlighted (today's static `accent`-styled "1").
+
+**10. A second, distinct empty state for "filtered/searched down to zero," separate from Feature 09's "no jobs saved yet."** `JobsListSection`'s existing `JobsEmptyState` (`jobs.length === 0`) stays exactly as is. A new, local, unexported `NoMatchesEmptyState` (mirrors its structure) renders when `jobs.length > 0` but the filtered+searched result is empty — otherwise the table would render zero rows with no explanation, and "Showing 1 to 0 of 0" is a confusing thing to show without one.
+
+**11. No new PostHog event, no DB read or write.** Pure client-side wiring over data Feature 10 already loads — matches `build-plan.md`'s Feature 11 entry, which lists no event.
+
+**12. `FilterOption` stays local to `components/find-jobs/`, same as `SortOption`.** One consumer each (`JobFilters`/`JobsListSection`); no promotion to `types/index.ts` unless a second real consumer needs it later.
+
+### Build plan for `/develop`
+
+1. `components/find-jobs/filter-jobs.ts` (new) — `FilterOption`, `filterJobs()`, `searchJobs()` per Decisions 2-3, 5.
+2. `components/find-jobs/paginate-jobs.ts` (new) — `JOBS_PAGE_SIZE`, `paginateJobs()`, `getPageNumbers()` per Decisions 5-6.
+3. `components/find-jobs/JobFilters.tsx` — controlled `filterBy`/`onFilterChange` and `searchQuery`/`onSearchChange` props alongside the existing `sortBy`/`onSortChange` (Decision 8).
+4. `components/find-jobs/JobsListSection.tsx` — add `filterBy`/`searchQuery`/`currentPage` state, the `useMemo` pipeline (Decision 4), page reset on filter/search/sort change, and the new `NoMatchesEmptyState` (Decisions 7, 10).
+5. `components/find-jobs/JobsPagination.tsx` — rewritten to take the real props from Decision 9 in place of the current hardcoded markup.
+6. `context/progress-tracker.md` — mark Feature 11 done with build notes, per `AGENTS.md`'s "update after every feature" rule.
+7. `context/ui-registry.md` — update the `JobFilters`/`JobsListSection`/`JobsPagination` entries to match their new props and behavior.
+
+### Verify (once built)
+
+- [ ] Typing in the search box filters the table live, case-insensitive, matching company or role.
+- [ ] All Matches / High Match / Low Match narrows the table correctly at the `MATCH_THRESHOLD` boundary.
+- [ ] Changing the filter, the search text, or the sort order resets pagination to page 1.
+- [ ] With more than 20 filtered/searched jobs: correct total page count, correct "Showing X to Y of Z," Previous/Next work and disable at the first/last page respectively.
+- [ ] `totalPages <= 7` renders every page number with no ellipsis; a larger count collapses correctly around the current page (Decision 6).
+- [ ] Filtering or searching down to zero results (with `jobs.length > 0`) shows `NoMatchesEmptyState`, not an empty table or a "Showing 1 to 0 of 0" banner.
+- [ ] `npx tsc --noEmit`, `npm run lint`, `npm run build` all clean.
+
+### Follow-up
+
+- [ ] If one user's saved job count ever grows large enough that loading it all unpaginated becomes slow, revisit Decision 1 and move to the server-side `.range()` approach Feature 10's Decision 12 originally sketched.

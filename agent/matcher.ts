@@ -8,7 +8,7 @@ import { z } from "zod";
 // 2. Internal imports
 import type { AdzunaJob } from "@/lib/adzuna";
 import { logAgentError } from "@/lib/agent-logs";
-import { gemini } from "@/lib/gemini";
+import { gemini, withGeminiRetry } from "@/lib/gemini";
 import { jobMatchSchema, type JobMatchResult } from "@/lib/job-matching-schema";
 import type { ProfileRow } from "@/lib/profile-transform";
 
@@ -58,23 +58,28 @@ export async function scoreJobs(
       jobs: candidateJobs,
     });
 
-    const response = await gemini.models.generateContent({
-      // Same model as Features 07/08 — gemini-2.5-flash was live-confirmed
-      // dead (404) during Feature 07's build. See lib/gemini.ts.
-      model: "gemini-3.6-flash",
-      contents: `${MATCHING_SYSTEM_PROMPT}\n\n${userPrompt}`,
-      config: {
-        responseMimeType: "application/json",
-        responseJsonSchema: z.toJSONSchema(jobMatchSchema),
-        // Deterministic scoring, matching this project's existing
-        // extraction convention (Decision 1).
-        temperature: 0.3,
-        // gemini-3.6-flash's thinking tokens count against this budget
-        // regardless of visible output length — reusing Features 07/08's
-        // own live-verified number rather than a smaller, untested one.
-        maxOutputTokens: 8000,
-      },
-    });
+    // Retries a transient 503 ("high demand, try again later") up to twice
+    // before treating it as a real failure — confirmed live 2026-09-09, see
+    // lib/gemini.ts's withGeminiRetry() for the full rationale.
+    const response = await withGeminiRetry(() =>
+      gemini.models.generateContent({
+        // Same model as Features 07/08 — gemini-2.5-flash was live-confirmed
+        // dead (404) during Feature 07's build. See lib/gemini.ts.
+        model: "gemini-3.6-flash",
+        contents: `${MATCHING_SYSTEM_PROMPT}\n\n${userPrompt}`,
+        config: {
+          responseMimeType: "application/json",
+          responseJsonSchema: z.toJSONSchema(jobMatchSchema),
+          // Deterministic scoring, matching this project's existing
+          // extraction convention (Decision 1).
+          temperature: 0.3,
+          // gemini-3.6-flash's thinking tokens count against this budget
+          // regardless of visible output length — reusing Features 07/08's
+          // own live-verified number rather than a smaller, untested one.
+          maxOutputTokens: 8000,
+        },
+      }),
+    );
 
     const finishReason = response.candidates?.[0]?.finishReason;
     if (!response.text) {

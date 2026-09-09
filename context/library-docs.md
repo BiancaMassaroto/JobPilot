@@ -578,12 +578,18 @@ const response = await openai.chat.completions.create({
 
 ```typescript
 // lib/gemini.ts
-import { GoogleGenAI } from "@google/genai";
+import { ApiError, GoogleGenAI } from "@google/genai";
 
 export const gemini = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
+
+export async function withGeminiRetry<T>(fn: () => Promise<T>): Promise<T> {
+  /* retries a 503 up to twice with a short delay — see below */
+}
 ```
 
 **This is a plain Google AI Studio key setup, not Vertex AI** — `GEMINI_API_PROJECT_NAME`/`GEMINI_PROJECT_ID` (also in `.env.local`) go unused here; don't wire them into this client.
+
+**Wrap every `generateContent()` call in `withGeminiRetry()` — confirmed live 2026-09-09, not just theoretical.** A real `/api/agent/find` run failed outright with a `503 UNAVAILABLE`: `"This model is currently experiencing high demand... Please try again later."` — Gemini's own message calls this transient. `withGeminiRetry()` retries a `503` up to twice with a short delay (`500ms`, `1500ms`) before letting the caller's catch block treat it as a real failure. **Never retry a `429`** (the quota error below) — retrying just wastes another request against the same exhausted daily cap; `isRetryableGeminiError()` inside `withGeminiRetry()` only matches `503`. Currently wired into Feature 10's batched scoring call (`agent/matcher.ts`) — wrap any future `generateContent()` call (Features 13/17) the same way rather than leaving it to fail outright on a transient blip.
 
 ### Structured JSON Response
 
@@ -624,6 +630,7 @@ const result = JSON.parse(response.text);
 - Always validate parsed JSON before using — wrap in try/catch
 - Temperature `0.3` for extraction (deterministic), `0.7` for resume generation (natural variation) — same convention the OpenAI table below originally documented, now applied to Gemini project-wide (Feature 08 decision, item 1)
 - Budget `maxOutputTokens` generously on a thinking model — thinking tokens are invisible in `response.text` but still consume the budget; check `response.usageMetadata.thoughtsTokenCount` if output is coming back truncated. `8000` has been the working budget for both extraction (Feature 07) and resume generation (Feature 08) so far — don't drop back to a smaller GPT-4o-style budget without re-verifying live, the way `800` silently truncated Feature 07's first attempt
+- Wrap every `generateContent()` call in `withGeminiRetry()` — a `503` ("high demand") is confirmed transient and worth one short retry; a `429` (quota) is not, and isn't retried
 
 ---
 

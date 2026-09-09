@@ -4,22 +4,36 @@
 import { ChevronDown, Search } from "lucide-react";
 
 // 2. Internal imports
+import type { FilterOption } from "@/components/find-jobs/filter-jobs";
 import type { SortOption } from "@/components/find-jobs/sort-jobs";
 
 // 3. Type definitions
 type Props = {
+  searchQuery: string;
+  onSearchChange: (query: string) => void;
+  filterBy: FilterOption;
+  onFilterChange: (filterBy: FilterOption) => void;
   sortBy: SortOption;
   onSortChange: (sortBy: SortOption) => void;
 };
 
 // 4. Component
-export function JobFilters({ sortBy, onSortChange }: Props) {
+export function JobFilters({
+  searchQuery,
+  onSearchChange,
+  filterBy,
+  onFilterChange,
+  sortBy,
+  onSortChange,
+}: Props) {
   return (
     <div className="flex flex-col gap-3 border-b border-border px-6 py-4 md:flex-row md:items-center md:justify-between">
       <div className="relative flex-1">
         <Search className="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-text-muted" />
         <input
           type="text"
+          value={searchQuery}
+          onChange={(event) => onSearchChange(event.target.value)}
           placeholder="Filter by company or role..."
           className="w-full rounded-md border border-transparent bg-transparent py-2 pr-3 pl-9 text-sm text-text-primary placeholder:text-text-muted focus:border-accent focus:ring-1 focus:ring-accent focus:outline-none"
         />
@@ -27,7 +41,8 @@ export function JobFilters({ sortBy, onSortChange }: Props) {
       <div className="flex items-center gap-3">
         <div className="relative">
           <select
-            defaultValue="all"
+            value={filterBy}
+            onChange={(event) => onFilterChange(event.target.value as FilterOption)}
             className="appearance-none rounded-md border border-border bg-surface py-2 pr-9 pl-3 text-sm font-medium text-text-primary focus:border-accent focus:ring-1 focus:ring-accent focus:outline-none"
           >
             <option value="all">All Matches</option>
