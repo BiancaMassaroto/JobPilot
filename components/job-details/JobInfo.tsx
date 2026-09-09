@@ -72,7 +72,7 @@ export function JobInfo({ job }: Props) {
           icon={Briefcase}
           iconBg="bg-accent-muted"
           iconColor="text-accent"
-          value={job.jobType ? JOB_TYPE_LABELS[job.jobType] : "—"}
+          value={job.jobType ? (JOB_TYPE_LABELS[job.jobType] ?? "—") : "—"}
           label="Job Type"
         />
         <InfoStat

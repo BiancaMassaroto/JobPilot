@@ -630,7 +630,7 @@ const result = JSON.parse(response.text);
 - Always validate parsed JSON before using — wrap in try/catch
 - Temperature `0.3` for extraction (deterministic), `0.7` for resume generation (natural variation) — same convention the OpenAI table below originally documented, now applied to Gemini project-wide (Feature 08 decision, item 1)
 - Budget `maxOutputTokens` generously on a thinking model — thinking tokens are invisible in `response.text` but still consume the budget; check `response.usageMetadata.thoughtsTokenCount` if output is coming back truncated. `8000` has been the working budget for both extraction (Feature 07) and resume generation (Feature 08) so far — don't drop back to a smaller GPT-4o-style budget without re-verifying live, the way `800` silently truncated Feature 07's first attempt
-- Wrap every `generateContent()` call in `withGeminiRetry()` — a `503` ("high demand") is confirmed transient and worth one short retry; a `429` (quota) is not, and isn't retried
+- Wrap every `generateContent()` call in `withGeminiRetry()` — transient `503` ("high demand") failures receive two retries, after `500 ms` and `1500 ms`; `429` quota failures are not retried
 
 ---
 
