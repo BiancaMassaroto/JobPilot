@@ -81,6 +81,12 @@
   --color-overlay: #111827;
   --color-overlay-dark: #131316;
 
+  /* Dashboard chart axis labels — pixel-sampled from dashboard.png (Feature
+     14); a distinct shade from every other text token, closest is
+     text-muted (#99A1AF) but not equal, so kept as its own token rather
+     than reused */
+  --color-chart-axis: #9ca3af;
+
   /* OAuth brand colors */
   --color-google-blue: #4285f4;
   --color-google-green: #34a853;

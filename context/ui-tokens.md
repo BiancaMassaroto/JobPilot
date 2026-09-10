@@ -111,6 +111,9 @@ className="bg-purple-500 text-gray-600"
   --color-overlay: #111827;
   --color-overlay-dark: #131316;
 
+  /* Dashboard chart axis labels — added Feature 14, pixel-sampled */
+  --color-chart-axis: #9ca3af;
+
   /* Border radius */
   --radius-sm: 4px;
   --radius-md: 8px;
@@ -331,23 +334,28 @@ font-weight: 500
 
 ### Activity Dots
 
-Each activity type has a specific dot color:
-| Activity Type | Outer ring | Inner dot |
+**Resolved at Feature 16** — this project only ever has two real dashboard activity types, not three: `agent_run` completions ("Found X jobs...") and `company_research` population ("Researched..."). Feature 14 flagged that the table below (still shown for its accurate colors) named "Resume tailored"/"Cover letter" types that don't exist anywhere in build-plan.md's 17 features, and had a third color with nothing real left to pair it with. Resolved by dropping the third pairing rather than inventing a use for it:
+
+| Real activity type | Outer ring | Inner dot |
 |---|---|---|
-| Resume tailored | `#F3E8FF` (accent-light) | `#7C5CFC` (accent) |
-| Cover letter | `#DBEAFE` (info-light) | `#61A8FF` (info) |
-| Job found | `#D0FAE5` (success-light) | `#00BC7D` (success-alt) |
+| Job found (`agent_run` completed) | `#D0FAE5` (success-light) | `#00BC7D` (success-alt) |
+| Company researched | `#DBEAFE` (info-light) | `#61A8FF` (info) |
+
+The accent pairing (`#F3E8FF`/`#7C5CFC`) is unused for now — `ActivityDotColor` (`components/dashboard/RecentActivity.tsx`) still allows `"accent"` as a type, kept available rather than removed, in case a third real activity type is ever added.
+
 Dot size: 8px inner, 16px outer with white border
 
 ### Dashboard Chart Colors
 
-| Chart                            | Color                                                           |
-| -------------------------------- | --------------------------------------------------------------- |
-| Jobs Found Over Time (line)      | `#7C5CFC` stroke, 3px width, gradient fill rgba(124,92,252,0.2) |
-| Resume Tailoring Activity (bars) | `#61A8FF`                                                       |
-| Match Score Distribution (bars)  | `#10B981`                                                       |
-| Chart grid lines                 | `1px dashed #E7EAF3`                                            |
-| Chart axis labels                | `#9CA3AF`, 12px                                                 |
+**Carried forward unchanged into the Feature 17 recharts rebuild** — `BarChartCard`/`LineChartCard` still source every color below from these same CSS variables, just through recharts props (`fill`, `stroke`, `tick`) instead of Tailwind classes or raw SVG attributes. See `ui-registry.md`'s updated entries.
+
+| Chart                             | Color                                                                                                                                                           |
+| --------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Jobs Found Over Time (line)      | `#7C5CFC` (`--color-accent`) stroke, 3px width, area fill gradient from `rgba(124,92,252,0.2)` at the line down to transparent at the baseline — pixel-confirmed (Feature 14), not a flat fill |
+| Company Research Activity (bars) | `#61A8FF` (`--color-info`) — corrected 2026-09-10 (Feature 14): this row previously said "Resume Tailoring Activity," a chart that doesn't exist anywhere in build-plan.md's 17 features; pixel-sampled against dashboard.png and matches the real Company Research Activity chart exactly |
+| Match Score Distribution (bars)  | `#10B981` (`--color-success`)                                                                                                                                   |
+| Chart grid lines                 | `1px dashed #E7EAF3` (`--color-border`) — pixel-confirmed (Feature 14)                                                                                           |
+| Chart axis labels                | `--color-chart-axis` (`#9CA3AF`), 12px — new token added Feature 14; pixel-sampled and confirmed distinct from `text-muted` (#99A1AF), so it isn't reused        |
 
 ### Logo
 

@@ -255,12 +255,14 @@ All environment variables defined in `.env.local` for development. Never hardcod
 | `NEXT_PUBLIC_APP_URL`           | actions/auth.ts — required HTTP(S) origin for OAuth `redirectTo` outside local development; a loopback `Host` fallback is allowed only in `NODE_ENV=development`. |
 | `BROWSERBASE_API_KEY`           | lib/stagehand.ts (`lib/browserbase.ts` was never built — see the `@browserbasehq/stagehand` dependency note above) |
 | `BROWSERBASE_PROJECT_ID`        | Not consumed by `lib/stagehand.ts` — `browserbase.launch()`'s real options in the installed version are only `{ apiKey, baseUrl }`; the session's project is inferred from the API key instead (confirmed live, Feature 13's `/develop` pass, 2026-09-10). Kept provisioned in case a future Browserbase API surface exposes explicit project selection. |
-| `OPENAI_API_KEY`                | Not currently used, and deliberately never added — the project switched to Gemini for every AI feature (see architecture.md's Feature 08 decision, item 1). Features 10 and 13 have both since confirmed the same switch in their own `/architect` passes; only Feature 17 (not yet built) still leaves this open for reconsideration. |
+| `OPENAI_API_KEY`                | Not currently used, and deliberately never added — the project switched to Gemini for every AI feature (see architecture.md's Feature 08 decision, item 1). Features 10 and 13 have both since confirmed the same switch in their own `/architect` passes; Feature 17's `/architect` pass confirms this is now closed for good — that feature is pure PostHog querying, no LLM call anywhere in it, and no AI-needing feature remains in build-plan.md. |
 | `GEMINI_API_KEY`                | lib/gemini.ts, lib/stagehand.ts — every AI feature project-wide (Feature 07 extraction, Feature 08 resume generation, Feature 10 job match scoring, Feature 13 company research synthesis + Stagehand's own driving model — passed explicitly as Stagehand's `model.apiKey`, not via its `GOOGLE_GENERATIVE_AI_API_KEY` auto-load) |
 | `ADZUNA_APP_ID`                 | lib/adzuna.ts          |
 | `ADZUNA_APP_KEY`                | lib/adzuna.ts          |
 | `NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN` | instrumentation-client.ts, lib/posthog-server.ts |
 | `NEXT_PUBLIC_POSTHOG_HOST`      | instrumentation-client.ts, lib/posthog-server.ts |
+| `POSTHOG_PERSONAL_API_KEY`      | lib/posthog-query.ts — a personal API key scoped to Query Read only, distinct from the public project token above (Feature 17 decision, architecture.md). Server-only, never `NEXT_PUBLIC_`. |
+| `POSTHOG_PROJECT_ID`            | lib/posthog-query.ts — `596864`, confirmed to match this app's own PostHog project (Feature 17 decision, architecture.md). Not a secret, but still read from env rather than hardcoded, matching every other config value in this table. |
 
 `NEXT_PUBLIC_` prefix means the variable is exposed to the browser. Never add `NEXT_PUBLIC_` to secret keys.
 
@@ -321,6 +323,7 @@ Approved dependencies for this project:
 - `posthog-node` — PostHog server client
 - `@react-pdf/renderer` — Resume PDF generation
 - `pdf-parse` — Extract text from uploaded PDF
+- `recharts` — Dashboard chart rendering (Feature 17 decision, architecture.md — engineer's explicit call over this project's own "hand-roll one-off chart shapes" precedent; see the decision for the tradeoff)
 - `zod` — Schema validation
 - `lucide-react` — Icons
 - `tailwindcss` — Styling
