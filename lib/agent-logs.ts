@@ -16,13 +16,15 @@ import { createInsforgeServer } from "@/lib/insforge-server";
 // 4. Component (n/a — pure helper module)
 
 // `userId` is required because agent_logs.user_id is NOT NULL and the caller
-// already has it from its own auth check. `runId` is also required (never
-// nullable): every call site in this feature already has a real agent_runs row
-// by the time it logs; Decision 9c's one run-less case bypasses this helper
-// entirely instead of being passed a placeholder.
+// already has it from its own auth check. `runId` widened to `string | null`
+// at Feature 13 (architecture.md's Feature 13 decision, Decision 5):
+// agent_logs.run_id is now nullable (migrated at that decision, CHECK
+// requires run_id or job_id), since company research has no agent_runs row
+// to attach to. Every Feature 10 call site still always passes a real run
+// id — this widening is backward compatible, not a behavior change for them.
 export async function logAgentError(
   userId: string,
-  runId: string,
+  runId: string | null,
   jobId: string | null,
   message: string,
   error: unknown,

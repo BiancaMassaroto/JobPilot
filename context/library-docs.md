@@ -335,30 +335,16 @@ const jobRecord = {
 
 **Check first:** Check AGENTS.md for an installed Browserbase skill. If a Browserbase MCP server is configured — use it. The skill/MCP will have the latest session management and API patterns.
 
-### Session Creation — Company Research
+**No separate `@browserbasehq/sdk` client is used in this project.** An earlier draft of this section had `lib/browserbase.ts` create the session directly via `@browserbasehq/sdk`'s `bb.sessions.create()`, then have Stagehand attach to it. **Corrected live during `/develop`, 2026-09-10**: that two-step design fails outright against the installed `@browserbasehq/stagehand` (v4.1.0) — `BrowserbaseSessionError: Stagehand extension is not installed in the connected browser. The extension must be included when the Browserbase session is created.` A session created by the plain SDK has no Stagehand extension in it, and this version needs one to drive the browser at all. `@browserbasehq/stagehand`'s own `browserbase.launch()` creates the session **and** installs the extension automatically — see the Stagehand section below, which owns session creation now. `@browserbasehq/sdk` was installed, found unnecessary, and uninstalled in the same pass — it is not a dependency of this project.
 
-```typescript
-import Browserbase from "@browserbasehq/sdk";
-
-const bb = new Browserbase({ apiKey: process.env.BROWSERBASE_API_KEY! });
-
-// Single session for company research — sequential page visits
-const session = await bb.sessions.create({
-  projectId: process.env.BROWSERBASE_PROJECT_ID!,
-  timeout: 120, // 2 minute session — visits 3-4 pages max
-});
-```
-
-**Important — Browserbase runs independently from your Next.js server:**
-Browserbase sessions run on Browserbase's cloud infrastructure, not inside your Next.js API route. The API route triggers the Browserbase session and returns a response while the session continues running independently on Browserbase's platform. Do not add `maxDuration` or any timeout configuration to Next.js API routes to accommodate Browserbase session length.
+**Important — Browserbase runs independently from your Next.js server, but that doesn't mean your route needs no timeout headroom of its own.** Browserbase sessions run on Browserbase's cloud infrastructure, not inside your Next.js API route — the browser instance itself has its own lifetime independent of your server's. **Corrected (Feature 13 decision, 2026-09-10):** this does NOT mean a route that synchronously drives `act()`/`extract()` calls (this project's chosen execution model — see architecture.md's Feature 13 decision, Decision 9) needs no `maxDuration` of its own. If your route awaits the whole research flow before responding (as this project's `/api/agent/research` does), it must stay alive for that full round trip — set `export const maxDuration` generously (this project uses `180`, the 120s session budget plus synthesis headroom), and confirm your actual deployment target honors it (not assumed to be Vercel here).
 
 **Rules:**
 
 - Always use single sessions — never parallel sessions (free plan limit)
-- Session timeout is 120 seconds — sufficient for 3-4 page visits
-- Always end sessions cleanly — call stagehand.close() when done
-- Project ID always from `process.env.BROWSERBASE_PROJECT_ID` — never hardcode
-- Browserbase client lives in `lib/browserbase.ts` — always import from there
+- Always end sessions cleanly — call `stagehand.close()` when done
+- Session creation, project scoping, and timeout are all owned by `browserbase.launch()` in `lib/stagehand.ts` now — see the Stagehand section's own notes on what that does and doesn't let you configure in the installed version
+- `serverExternalPackages` in `next.config.ts` must include `"@browserbasehq/stagehand"` — Turbopack's production build can't resolve its `new URL("../", import.meta.url)` package-root lookup otherwise (`Module not found: Can't resolve '../'`, confirmed live) — same class of fix as `pdf-parse`'s own entry there
 
 ---
 
@@ -366,131 +352,141 @@ Browserbase sessions run on Browserbase's cloud infrastructure, not inside your 
 
 **Check first:** Check AGENTS.md for an installed Stagehand skill. If a Stagehand MCP server is configured — use it. The skill/MCP will have the latest act() and extract() patterns.
 
-### Initialisation
+**This section was rewritten from scratch during `/develop`, 2026-09-10, against the actually-installed `@browserbasehq/stagehand` (v4.1.0) — a materially different major version from what was originally documented here (a v3-style API).** Every snippet below is confirmed against the installed package's real types and a real live call (a real Browserbase session, a real `extract()` call against a real page, a real structured result back), not assumed from docs alone — the current docs also turned out to sit at `docs.stagehand.dev/v4`, not the `/v3` URL an earlier check landed on.
+
+### Initialisation (owns session creation too — no separate Browserbase SDK call)
 
 ```typescript
-import { Stagehand } from "@browserbasehq/stagehand";
+import { browserbase, Stagehand } from "@browserbasehq/stagehand";
 
-const stagehand = new Stagehand({
-  env: "BROWSERBASE",
+// browserbase.launch() creates the Browserbase session AND uploads/installs
+// the required Stagehand extension automatically — this is the whole
+// session-creation step, no separate @browserbasehq/sdk call needed.
+// Confirmed against the installed package's own runtime schema: its real
+// options are only { apiKey, baseUrl } — no projectId or timeout override
+// in this version. Project is inferred from the API key; timeout comes
+// from the Browserbase project's own default.
+const browser = await browserbase.launch({
   apiKey: process.env.BROWSERBASE_API_KEY!,
-  projectId: process.env.BROWSERBASE_PROJECT_ID!,
-  browserbaseSessionID: session.id,
-  model: { modelName: "openai/gpt-4o", apiKey: process.env.OPENAI_API_KEY! },
-  disablePino: true,
 });
 
-await stagehand.init();
-const page = stagehand.context.activePage()!;
+const stagehand = await Stagehand.create({
+  browser,
+  // Gemini, not OpenAI — corrected, Feature 13 decision, 2026-09-10.
+  // "google/gemini-3.6-flash" (not Stagehand's own doc example,
+  // "google/gemini-2.5-flash" — this project already found that exact
+  // model dead in production, see the Gemini section below). API key
+  // passed explicitly, not via Stagehand's GOOGLE_GENERATIVE_AI_API_KEY
+  // auto-load env var — reuses this project's existing GEMINI_API_KEY.
+  model: { modelName: "google/gemini-3.6-flash", apiKey: process.env.GEMINI_API_KEY! },
+  // Replaces the old, no-longer-existing `disablePino: true`.
+  logging: { level: "off" },
+});
+// No separate .init() call — Stagehand.create() is the whole constructor.
+
+const page = await stagehand.browser.context.newPage("https://example.com");
+// stagehand.context does NOT exist directly — the real accessor is
+// stagehand.browser.context (stagehand.browser is a getter).
 ```
 
 ### extract()
 
+**Schema is the second positional argument, not a field inside an options object.**
+
 ```typescript
 import { z } from "zod";
 
-const result = await stagehand.extract({
-  instruction:
-    "Extract the company overview, main product description, and any technology mentions from this page.",
-  schema: z.object({
-    companyOverview: z.string().optional(),
-    mainProduct: z.string().optional(),
-    techMentions: z.array(z.string()).optional(),
-    navLinks: z
-      .array(
-        z.object({
-          label: z.string(),
-          url: z.string(),
-        }),
-      )
-      .optional(),
-  }),
+const schema = z.object({
+  companyOverview: z.string(),
+  mainProduct: z.string(),
+  techMentions: z.array(z.string()),
+  navLinks: z.array(z.object({ label: z.string(), url: z.string() })),
 });
+
+const result = await stagehand.extract(
+  "Extract the company overview, main product description, and any technology mentions from this page.",
+  schema,
+  { page }, // options is the third, optional argument — page, timeout, cache, etc.
+);
+
+// The parsed data is on result.data, typed to the schema.
+console.log(result.data.companyOverview);
 ```
+
+**A real cross-package type friction, not a functional bug**: the installed `@browserbasehq/stagehand` pins its own `zod` (`4.4.3`), distinct from this project's own `zod` (`4.5.4`) — two structurally identical but nominally different packages, so TypeScript can't unify their `ZodType` branding across the package boundary. Both are plain zod v4 objects and interoperate correctly at runtime (confirmed live) — resolve this with a narrow, explicit cast at the call site (see `agent/research.ts`'s `forStagehandSchema()`) rather than pinning a shared zod version across two independently-versioned packages.
 
 ### act()
 
 ```typescript
-// Always wrap in try/catch
+// Positional string, not an { action: "..." } object.
+// Always wrap in try/catch.
 try {
-  await stagehand.act({
-    action: "Click the About link in the navigation",
-  });
+  await stagehand.act("Click the About link in the navigation");
 } catch (error) {
-  await logAgentError(userId, jobId, null, "Company research failed", error);
+  // Corrected — Feature 13 decision, 2026-09-10: this previously read
+  // logAgentError(userId, jobId, null, ...), passing jobId into the runId
+  // slot and null into the jobId slot — backwards from the real signature
+  // below. runId is null here because company research has no agent_run
+  // to attach to (agent_logs.run_id is nullable as of this decision).
+  await logAgentError(userId, null, jobId, "Company research failed", error);
 }
 ```
 
-## Company Research Section
-
-Replace the existing Stagehand "Company Research Pattern" section in library-docs.md with this:
-
----
-
 ### Company Research Pattern
 
-Three-step process: homepage extraction → sub-page extraction → GPT-4o synthesis.
+Three-step process: homepage extraction → sub-page extraction → Gemini synthesis (corrected from GPT-4o, Feature 13 decision).
 Job description and user profile come from DB — never re-fetch what you already have.
 Browser's only job is the company website.
 
 ```typescript
-// Step 1 — Homepage extraction
-const homepageData = await stagehand.extract({
-  instruction:
-    "This is a company's homepage. Capture what the company actually does, who it's for, and any concrete signals (funding, customers, scale, mission, recent launches). Then find the internal links most worth visiting to research them as an employer.",
-  schema: z.object({
-    oneLiner: z.string().describe("What the company does in one sentence"),
-    productSummary: z
-      .string()
-      .describe("What they build/sell and who it's for"),
-    signals: z
-      .array(z.string())
-      .describe("Funding, notable customers, scale, mission, recent news"),
-    pageLinks: z
-      .array(
-        z.object({
-          url: z.string(),
-          kind: z.enum([
-            "about",
-            "careers",
-            "blog",
-            "engineering",
-            "product",
-            "team",
-            "other",
-          ]),
-        }),
-      )
-      .describe("Internal links worth visiting"),
-  }),
+// Step 1 — Homepage extraction. Schema is the second positional argument
+// (see extract()'s own section above) — this pattern predates that
+// correction and is now written to match it.
+const homepageSchema = z.object({
+  oneLiner: z.string(),
+  productSummary: z.string(),
+  signals: z.array(z.string()),
+  pageLinks: z.array(
+    z.object({
+      url: z.string(),
+      kind: z.enum(["about", "careers", "blog", "engineering", "product", "team", "other"]),
+    }),
+  ),
 });
 
-// If oneLiner and productSummary are empty — wrong site or parked domain
-// Skip to synthesis with job description and profile only
-if (!homepageData.oneLiner && !homepageData.productSummary) {
-  await stagehand.close();
-  // proceed to synthesis with empty companyResearch
-}
+const page = await stagehand.browser.context.newPage(homepageUrl);
+const homepageResult = await stagehand.extract(
+  "This is a company's homepage. Capture what the company actually does, who it's for, and any concrete signals (funding, customers, scale, mission, recent launches). Then find the internal links most worth visiting to research them as an employer.",
+  homepageSchema,
+  { page },
+);
+const homepageData = homepageResult.data;
 
-// Step 2 — Sub-page extraction (max 3, prefer about/blog/engineering/product over careers)
-const subPageData = await stagehand.extract({
-  instruction:
-    "Extract substance that helps a candidate understand this company before applying: what they do, their values and how they work, the specific technologies and tools they use, notable projects or customers, and how the team operates. Ignore nav, footers, cookie banners, and generic marketing copy.",
-  schema: z.object({
-    keyPoints: z.array(z.string()),
-    technologies: z
-      .array(z.string())
-      .describe("Specific languages, frameworks, tools, platforms"),
-    valuesOrCulture: z
-      .array(z.string())
-      .describe("Stated values, working style, team norms"),
-    notable: z
-      .array(z.string())
-      .describe("Customers, funding, scale, projects, awards"),
-  }),
+// If oneLiner and productSummary are empty — wrong site or parked domain.
+// Skip sub-page extraction, proceed to synthesis with job + profile only —
+// never close the session here, it still needs to close in the finally
+// block either way (see the Rules below).
+
+// Step 2 — Sub-page extraction (max 3, selected by the fixed kind-priority
+// order in architecture.md's Feature 13 decision, Decision 4a — about >
+// blog > engineering > product > team > other, careers only as a fallback)
+const subPageSchema = z.object({
+  keyPoints: z.array(z.string()),
+  technologies: z.array(z.string()),
+  valuesOrCulture: z.array(z.string()),
+  notable: z.array(z.string()),
 });
 
-// Step 3 — GPT-4o synthesis (after browser closes)
+const subPage = await stagehand.browser.context.newPage(subPageUrl);
+const subPageResult = await stagehand.extract(
+  "Extract substance that helps a candidate understand this company before applying: what they do, their values and how they work, the specific technologies and tools they use, notable projects or customers, and how the team operates. Ignore nav, footers, cookie banners, and generic marketing copy.",
+  subPageSchema,
+  { page: subPage },
+);
+const subPageData = subPageResult.data;
+
+// Step 3 — Gemini synthesis (after browser closes; corrected from GPT-4o
+// per architecture.md's Feature 13 decision, 2026-09-10)
 // Feed three data sources: company research + job from DB + profile from DB
 const systemPrompt = `You are a sharp career strategist preparing a candidate to apply for a specific role. You are given (a) research collected from the company's own website, (b) the job posting, and (c) the candidate's profile. Produce a concise, concrete briefing that gives this specific candidate an edge for this specific role.
 
@@ -530,15 +526,20 @@ Experience: ${profile.years_experience} years, level ${profile.experience_level}
 Skills: ${profile.skills.join(", ")}
 Work history: ${JSON.stringify(profile.work_experience)}`;
 
-const response = await openai.chat.completions.create({
-  model: "gpt-4o",
-  response_format: { type: "json_object" },
-  temperature: 0.4,
-  messages: [
-    { role: "system", content: systemPrompt },
-    { role: "user", content: userPrompt },
-  ],
-});
+const response = await withGeminiRetry(() =>
+  gemini.models.generateContent({
+    model: "gemini-3.6-flash",
+    contents: `${systemPrompt}\n\n${userPrompt}`,
+    config: {
+      responseMimeType: "application/json",
+      responseJsonSchema: z.toJSONSchema(companyResearchSchema),
+      temperature: 0.4,
+      maxOutputTokens: 8000,
+    },
+  }),
+);
+if (!response.text) throw new Error("Empty response from Gemini");
+const dossier = companyResearchSchema.parse(JSON.parse(response.text));
 ```
 
 **Dossier fields:**
@@ -560,9 +561,9 @@ const response = await openai.chat.completions.create({
 - Always use `extract()` with a Zod schema — never parse raw HTML or use regex
 - Always wrap every `act()` and `extract()` in try/catch
 - Always call `await stagehand.close()` when done — ends the Browserbase session
-- Model is always `gpt-4o` — never use other models
+- Synthesis model is `gemini-3.6-flash` (corrected from `gpt-4o`, Feature 13 decision) — wrapped in `withGeminiRetry()`; Stagehand's own driving model is separately configured as `google/gemini-3.6-flash` (see the Initialisation section above) — never OpenAI/GPT-4o for either
 - Temperature is `0.4` for synthesis — grounded but flexible enough to make real connections
-- Max 3 sub-pages — never exceed this on free plan
+- Max 3 sub-pages — never exceed this on free plan, selected by the fixed priority order in architecture.md's Feature 13 decision (Decision 4a), not an ad hoc pick
 - Always close session in finally block — never leave sessions open even if research fails
 - Job description and profile always come from DB — never re-fetch via browser
 - If browser research returns empty — still run synthesis with job + profile only
@@ -572,7 +573,7 @@ const response = await openai.chat.completions.create({
 
 **Check first:** Check AGENTS.md for an installed Gemini skill. No Gemini SDK skill is installed as of this writing — use this file and the official Gemini API docs.
 
-**Scope note (Feature 08 decision, `architecture.md`, correcting Feature 07's original note; updated at Feature 10):** Gemini is this project's provider for every AI feature, not just extraction. Feature 07 (extraction), Feature 08 (resume generation), and now Feature 10 (job match scoring — one batched call per search, see architecture.md's Adzuna Job Discovery decision) all use it. Features 13/17 still document GPT-4o below, pending their own `/architect` pass — the project-wide switch should carry into each when it's actually built, per architecture.md's Feature 08 decision, item 1.
+**Scope note (Feature 08 decision, `architecture.md`, correcting Feature 07's original note; updated at Feature 10 and Feature 13):** Gemini is this project's provider for every AI feature, not just extraction. Feature 07 (extraction), Feature 08 (resume generation), Feature 10 (job match scoring — one batched call per search), and now Feature 13 (company research synthesis *and* Stagehand's own driving model, `google/gemini-3.6-flash` — see architecture.md's Feature 13 decision) all use it. Feature 17 still documents GPT-4o below, pending its own `/architect` pass — the project-wide switch should carry into it when it's actually built, per architecture.md's Feature 08 decision, item 1.
 
 ### Client Setup (Server-Only)
 
@@ -636,7 +637,7 @@ const result = JSON.parse(response.text);
 
 ## OpenAI GPT-4o
 
-**Not currently used anywhere in this project (Feature 08 decision, `architecture.md`, item 1) — kept below for Features 13/17 to reconsider when each is built,** since the project switched to Gemini for every AI feature during Feature 08's build, and Feature 10 confirmed the same switch for job match scoring at its own `/architect` pass (2026-09-08). `openai` is not an approved dependency (see `code-standards.md`); if a future feature reconsiders GPT-4o specifically, that reasoning belongs in that feature's own `/architect` decision, not assumed from this section.
+**Not currently used anywhere in this project (Feature 08 decision, `architecture.md`, item 1) — kept below only for Feature 17 to reconsider when it's built,** since the project switched to Gemini for every AI feature during Feature 08's build, Feature 10 confirmed the same switch for job match scoring, and Feature 13 (2026-09-10) confirmed it again for company research synthesis and Stagehand's driving model — ruling this out permanently for that feature, not just leaving it pending. `openai` is not an approved dependency (see `code-standards.md`); if Feature 17 reconsiders GPT-4o specifically, that reasoning belongs in that feature's own `/architect` decision, not assumed from this section.
 
 **Check first:** Check AGENTS.md for an installed OpenAI skill. The skill will have the latest API patterns and model capabilities.
 

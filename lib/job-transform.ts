@@ -6,7 +6,7 @@
 // (none)
 
 // 2. Internal imports
-import type { Job, JobDetail, JobSource, JobType } from "@/types";
+import type { CompanyResearchDossier, Job, JobDetail, JobSource, JobType } from "@/types";
 
 // 3. Type definitions
 export type JobRow = {
@@ -22,7 +22,9 @@ export type JobRow = {
 // Feature 12 (Job Details Page) — the wider row shape app/find-jobs/[id]/
 // page.tsx selects. Deliberately its own type rather than reusing JobRow:
 // see JobDetail's own comment in types/index.ts for why the two UI shapes
-// (and so their row counterparts) stay separate.
+// (and so their row counterparts) stay separate. company_research/
+// company_researched_at added at Feature 13 (architecture.md's Feature 13
+// decision, Decision 17a).
 export type JobDetailRow = {
   id: string;
   title: string;
@@ -37,6 +39,8 @@ export type JobDetailRow = {
   matched_skills: string[] | null;
   missing_skills: string[] | null;
   external_apply_url: string | null;
+  company_research: CompanyResearchDossier | null;
+  company_researched_at: string | null;
 };
 
 // 4. Component (n/a — pure transform module)
@@ -73,5 +77,7 @@ export function fromJobDetailRow(row: JobDetailRow): JobDetail {
     matchedSkills: row.matched_skills ?? [],
     missingSkills: row.missing_skills ?? [],
     externalApplyUrl: row.external_apply_url,
+    companyResearch: row.company_research,
+    companyResearchedAt: row.company_researched_at ? new Date(row.company_researched_at) : null,
   };
 }

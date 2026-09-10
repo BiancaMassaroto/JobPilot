@@ -9,6 +9,7 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@browserbasehq/stagehand": "^4.1.0",
     "@google/genai": "^2.21.0",
     "@insforge/sdk": "^1.5.2",
     "@react-pdf/renderer": "^4.9.0",

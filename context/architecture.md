@@ -9,7 +9,7 @@
 | Cloud browser                  | Browserbase              | Company research — browsing company public pages |
 | AI browser control             | Stagehand                | Company page interaction and content extraction  |
 | Job Discovery                  | Adzuna API               | Job search and discovery                         |
-| AI model                       | Gemini (`@google/genai`) | Extraction, resume generation, job match scoring — every AI feature project-wide as of the Feature 08 decision below, now including Feature 10 (see its decision below); Features 13/17 still say GPT-4o elsewhere in these docs until each is rebuilt to match |
+| AI model                       | Gemini (`@google/genai`) | Extraction, resume generation, job match scoring, company research synthesis + Stagehand's own driving model — every AI feature project-wide as of the Feature 08 decision below, now including Features 10 and 13 (see their decisions below); Feature 17 still says GPT-4o elsewhere in these docs until it is rebuilt to match |
 | Analytics                      | PostHog                  | Event tracking and dashboard charts              |
 | PDF generation                 | @react-pdf/renderer      | Resume PDF rendering                             |
 | Styling                        | Tailwind CSS + shadcn/ui | UI components and styling                        |
@@ -59,7 +59,7 @@
 ├── agent/
 │   ├── adzuna.ts                          → Adzuna API job discovery (Feature 10) — calls lib/adzuna.ts, dedupes, saves to DB
 │   ├── matcher.ts                         → Gemini job match scoring (Feature 10 — corrected from GPT-4o, see its decision below), one batched call per search
-│   ├── research.ts                        → Company research — Browserbase + Stagehand + GPT-4o (Feature 13, not yet built — provider TBD at its own /architect pass)
+│   ├── research.ts                        → Company research — Browserbase + Stagehand (Gemini-driven) + Gemini synthesis (Feature 13 decision below, not yet built)
 │   ├── extractor.ts                       → GPT-4o job description extraction + structuring (not yet built)
 │   └── types.ts                           → Agent-specific TypeScript types
 ├── actions/
@@ -101,7 +101,7 @@
 ├── lib/
 │   ├── insforge-client.ts                 → InsForge browser client instance
 │   ├── insforge-server.ts                 → InsForge server client
-│   ├── browserbase.ts                     → Browserbase session creation + management
+│   (no lib/browserbase.ts — Feature 13's `/develop` pass found it unnecessary: `lib/stagehand.ts`'s `browserbase.launch()` creates the Browserbase session itself, see architecture.md's Feature 13 decision, Decision 3)
 │   ├── stagehand.ts                       → Stagehand initialisation with Browserbase session
 │   ├── adzuna.ts                          → Adzuna API client
 │   ├── posthog-client.ts                  → PostHog identity helpers (identifyUser, resetIdentity), isPostHogConfigured, captureBeforeNavigate — init lives in instrumentation-client.ts
@@ -152,7 +152,7 @@ Calls agent/adzuna.ts
         ↓
 Adzuna API returns job listings
         ↓
-GPT-4o scores each job against user profile
+Gemini scores each job against user profile
         ↓
 Agent writes results to InsForge DB
         ↓
@@ -172,7 +172,7 @@ Single Browserbase session opens with Stagehand
         ↓
 Navigates to company homepage + sub pages
         ↓
-GPT-4o synthesizes dossier from extracted content
+Gemini synthesizes dossier from extracted content
         ↓
 Dossier saved to jobs.company_research
         ↓
@@ -186,7 +186,7 @@ User uploads resume or clicks Generate
         ↓
 API route in app/api/resume/
         ↓
-GPT-4o processes content
+Gemini processes content
         ↓
 @react-pdf/renderer renders PDF buffer
         ↓
@@ -265,7 +265,7 @@ URL saved to profiles table
 | benefits           | text[]      | Optional                                       |
 | about_company      | text        | Brief company description                      |
 | match_score        | integer     | 0-100 scored against main profile              |
-| match_reason       | text        | GPT-4o explanation                             |
+| match_reason       | text        | Gemini explanation (corrected — Feature 10 decision) |
 | matched_skills     | text[]      | Skills user has that match                     |
 | missing_skills     | text[]      | Skills user lacks                              |
 | company_research   | jsonb       | Company dossier from research agent            |
@@ -277,7 +277,7 @@ URL saved to profiles table
 | Column     | Type        | Notes                            |
 | ---------- | ----------- | -------------------------------- |
 | id         | uuid        |                                  |
-| run_id     | uuid        | References agent_runs            |
+| run_id     | uuid        | References agent_runs — nullable (Feature 13 decision: company research has no agent_run to attach to; CHECK requires run_id or job_id) |
 | user_id    | uuid        | References profiles              |
 | message    | text        | Human readable log entry         |
 | level      | text        | info / success / warning / error |
@@ -294,6 +294,7 @@ The tables above name columns and types; this section is what actually gets exec
 - **`jobs.run_id` ownership is enforced at the DB level, not just existence.** A plain `run_id uuid REFERENCES agent_runs(id)` only proves the run exists — it does not stop a row where `jobs.user_id` differs from that run's `agent_runs.user_id` (RLS's `WITH CHECK (auth.uid() = user_id)` checks the job's own `user_id`, never who owns the run it points at). That gap lets one user's job attach to another user's run, and a future run deletion would then cascade-delete a job that isn't the run owner's. **Decision: a composite FK `(run_id, user_id) REFERENCES agent_runs(id, user_id)`**, which requires `agent_runs` to carry a `UNIQUE (id, user_id)` constraint as the FK target; Postgres skips the check when `run_id IS NULL` (source `url`), so it only bites when a run is actually referenced. Paired with a `CHECK` tying `source` to `run_id`'s presence (`search` requires one, `url` forbids one), so the two nullable-FK-plus-enum fields can't drift apart either.
 - **Cascade behavior**: deleting a user cascades down through `agent_runs`, `jobs`, and `agent_logs`; deleting an `agent_run` also cascades to its `jobs` and `agent_logs` (nothing in scope deletes a run today — this only matters if a future admin/cleanup path does, but an orphaned row is worse than an assumption stated plainly here).
 - **`jobs.company_researched_at` added — neither existing table had a usable timestamp for "when was this company researched."** `agent_runs` has `started_at`/`completed_at`, not `created_at`; `jobs.found_at` records when the job listing was found, not when its `company_research` dossier was saved, and `agent_logs` requires a `run_id` (company research runs standalone from a job details page, outside any `agent_run`, so it has none to attach a log to). **Decision: a nullable `company_researched_at timestamptz`**, set when the dossier is saved (`build-plan.md` Feature 13), null until then — the activity timestamp `build-plan.md`'s Recent Activity merge (Feature 16) needs.
+  - **Correction — this column was never actually applied live, discovered the hard way.** This decision recorded the column as a done migration back at Feature 04, and Feature 13's own `/architect`/`/develop` passes both repeated that claim without re-checking it against the live database. It surfaced as a real, reproducible bug: the engineer clicked a job on `/find-jobs` and got `column "company_researched_at" does not exist` from `app/find-jobs/[id]/page.tsx`'s query, confirmed directly via `get-table-schema` (the live `jobs` table had `company_research` but not this column at all) — 2026-09-10. Fixed live via `run-raw-sql` (`ALTER TABLE jobs ADD COLUMN company_researched_at timestamptz;`) and reconfirmed present with the right type. **Lesson carried forward**: a schema claim recorded in this file is not itself proof the migration actually landed — re-verify a column's real presence via `get-table-schema` before building a new feature on top of an old decision's claim, the same live-verification bar this project already applies to third-party library docs.
 - **Storage isolation gap — flagged, not silently assumed away.** `storage.objects` has `rlsEnabled: false` and zero policies; `create-bucket` only takes a coarse `isPublic` flag. There is **no per-object ownership check at the DB level** — a "private" bucket means "must be authenticated," not "only the owning user can read their own file." **Decision: private bucket + versioned, unguessable `{user_id}/resume-{uuid}.pdf` paths are the current protection** (obscurity, not enforcement). If resumes ever need real per-user isolation, that means routing downloads through a server action that checks `profiles.resume_pdf_url` ownership first — not something `create-bucket`'s `isPublic` flag can give us. Flagged as a Follow-up, not solved here.
 
   **Follow-up resolved (`/develop`, 2026-09-07, Feature 08):** turned out to be forced, not optional — a direct link to the stored URL 401s outright (see the "InsForge Storage" section below), so Feature 08 had to add exactly this server-side proxy (`app/api/resume/download/route.ts`) to make viewing a resume work at all. That route incidentally also closes this isolation gap for good, at least for resumes: it scopes the lookup to `profiles.resume_pdf_url` for the calling user's own row before ever calling `.download()`, so it can only ever serve the caller's own file, not just an unguessable one.
@@ -606,43 +607,32 @@ const data = await response.json();
 
 ---
 
-## Company Research Pattern
+## Company Research Pattern (corrected — Feature 13 decision, 2026-09-10)
 
 ```typescript
-// Single session — visits company homepage and sub pages sequentially
-const stagehand = new Stagehand({
-  env: "BROWSERBASE",
-  apiKey: process.env.BROWSERBASE_API_KEY!,
-  projectId: process.env.BROWSERBASE_PROJECT_ID!,
-  browserbaseSessionID: session.id,
-  modelName: "gpt-4o",
-  modelClientOptions: { apiKey: process.env.OPENAI_API_KEY! },
-});
+// lib/stagehand.ts — new session per research run, Gemini-driven per Decision 2
+const { stagehand, sessionId } = await createResearchSession();
+// internally: bb.sessions.create({ projectId, timeout: 120 }), then
+// new Stagehand({ env: "BROWSERBASE", apiKey: BROWSERBASE_API_KEY, projectId,
+//   browserbaseSessionID: session.id,
+//   model: { modelName: "google/gemini-3.6-flash", apiKey: GEMINI_API_KEY },
+//   disablePino: true }), then stagehand.init()
 
-await stagehand.init();
-const page = stagehand.page;
+// Homepage URL resolved via the SSRF-guarded lib/safe-fetch.ts, not a naive
+// `https://www.${cleanName}.com` guess — see Feature 13 decision, Decision 4
+const homepageUrl = await resolveEmployerHomepageUrl(job.source_url, job.company);
 
-// Clean company name and construct homepage URL
-const cleanName = companyName
-  .replace(/\s*(Inc\.?|LLC|Ltd\.?|Corp\.?|Co\.?).*$/i, "")
-  .trim()
-  .toLowerCase()
-  .replace(/\s+/g, "");
-
-const homepageUrl = `https://www.${cleanName}.com`;
-
-// Navigate and extract — graceful fallback if page not found
 try {
-  await page.goto(homepageUrl);
-  await page.waitForLoadState("networkidle");
-  const content = await stagehand.extract({ instruction: "..." });
+  const homepage = await stagehand.extract({ instruction: "...", schema: homepageSchema });
+  // ... up to 3 sub-page extract() calls per Decision 4a's priority order ...
 } catch (error) {
-  // Log and continue — GPT-4o will synthesize from what was found
-  await logAgentError(jobId, error);
+  // Log and continue — Gemini synthesizes from whatever was gathered.
+  // runId is null (company research has no agent_run) — Decision 5.
+  await logAgentError(userId, null, jobId, "Company research failed", error);
+} finally {
+  // Always close session when done, even on failure.
+  await stagehand.close();
 }
-
-// Always close session when done
-await stagehand.close();
 ```
 
 ---
@@ -657,7 +647,7 @@ Rules the AI agent must never violate:
 - All InsForge server-side writes use `createInsforgeServer()` — never the browser client.
 - No hardcoded hex values or raw Tailwind color classes in components — use CSS variables from ui-tokens.md.
 - Every Stagehand action is wrapped in try/catch. Failures are logged to agent_logs, never thrown to crash the run.
-- Company research always returns a dossier — even if browser research fails, GPT-4o synthesizes from company name and job description alone. Never return empty.
+- Company research always returns a dossier — even if browser research fails, Gemini synthesizes from company name and job description alone. Never return empty.
 - Browserbase sessions are always closed with stagehand.close() when done — never leave sessions open.
 - Always scope InsForge queries to the current user_id — never query without a user filter.
 - Adzuna API always includes category=it-jobs — never search without this filter.
@@ -763,7 +753,7 @@ closes those gaps.
 
 **Follow-up resolved (`/develop`, 2026-09-07, during Feature 08's build):** the engineer made the project-wide call directly — Gemini for every AI feature, not just this one. See the Feature 08 decision below, Decision 1, for the correction and what it means for Features 10/13/17 (still to be built).
 
-**2. Package & client.** `@google/genai` — the current Google GenAI SDK for both the Gemini Developer API (AI Studio keys) and Vertex AI, superseding the deprecated `@google/generative-ai`. New `lib/gemini.ts` (server-only; mirrors `lib/browserbase.ts`'s plain-singleton pattern — Gemini has no client/server split the way InsForge does, there's no browser-side usage):
+**2. Package & client.** `@google/genai` — the current Google GenAI SDK for both the Gemini Developer API (AI Studio keys) and Vertex AI, superseding the deprecated `@google/generative-ai`. New `lib/gemini.ts` (server-only; mirrors the plain-singleton client pattern this project uses for third-party clients — Gemini has no client/server split the way InsForge does, there's no browser-side usage; the original comparison pointed at `lib/browserbase.ts`, which Feature 13's `/develop` pass later found unnecessary — see architecture.md's Feature 13 decision, Decision 3):
 
 ```typescript
 // lib/gemini.ts
@@ -1115,3 +1105,124 @@ System prompt: "You are a job matching assistant. Score each listed job against 
 ### Follow-up
 
 - [ ] If one user's saved job count ever grows large enough that loading it all unpaginated becomes slow, revisit Decision 1 and move to the server-side `.range()` approach Feature 10's Decision 12 originally sketched.
+
+---
+
+## Company Research Agent (Feature 13 decision — `/architect`, 2026-09-10)
+
+`build-plan.md`'s Feature 13 entry is already unusually detailed (SSRF-guarded homepage URL derivation, single Browserbase session, homepage + max-3-subpage `extract()`, dossier JSON shape, `jobs.company_research`/`company_researched_at` already migrated in Feature 04) — this section treats that as the real starting spec, not something to re-derive, and closes what it leaves open: the AI provider (explicitly flagged as TBD since Feature 07/08's decisions), a live-confirmed schema blocker that stops this feature from logging its own failures at all, the concrete SSRF implementation mechanism, the execution model, the re-run policy, and the loading/populated UI states no design mock covers. Every open question below was either put to the engineer directly or verified live (a real web check, a real schema query against this project's own InsForge backend) — none is assumed.
+
+**1. AI provider — Gemini only, ratified directly by the engineer, not re-opened for discussion.** No ChatGPT/OpenAI/GPT-4o anywhere in this feature — for the dossier synthesis call *and* for Stagehand's own browser-driving model, which is a separate concern from synthesis (Feature 07 decision 1 and Feature 08 decision 1 both flagged Stagehand's `modelName` as needing its own look here, not assumed). This finalizes what those two decisions left open. Consistent with the live signal that `OPENAI_API_KEY` isn't even provisioned in `.env.local`.
+
+**2. Stagehand's driving model — `google/gemini-3.6-flash`, confirmed via a live web check against Stagehand's current docs, not assumed from training data.** Stagehand (`@browserbasehq/stagehand`) supports a `provider/model` string for `model.modelName` since v2.5.2, including Google — confirmed against `docs.stagehand.dev/v3/configuration/models` and `docs.stagehand.dev/v3/basics/extract` (2026-09-10). Stagehand's own docs example uses `google/gemini-2.5-flash` — **not used here**: this project already found that exact model dead in production (a live `404`, Feature 07 decision, "no longer available to new users") and moved to `gemini-3.6-flash` project-wide. Use `google/gemini-3.6-flash` for consistency with every other Gemini call in this codebase, not Stagehand's (already-stale-relative-to-this-project's-own-findings) doc example. Structured `extract()` schemas are described as provider-agnostic (Stagehand translates the zod schema internally regardless of model) with no Gemini-specific caveat documented. **Live-confirmed during `/develop`, 2026-09-10 — not just the docs check above.** A real `Stagehand.create()` with this exact model config, driving a real Browserbase session against a real page (`stripe.com`), returned valid, correctly-shaped structured JSON from a schema-based `extract()` call. This also confirms Stagehand's own Gemini usage draws on the same `GEMINI_API_KEY` (Google AI Studio) key and quota as every other Gemini call in this project — resolving the Follow-up question this decision originally left open about whether Stagehand bills separately.
+
+**2a. API key — passed explicitly, no new env var.** Stagehand's docs show an auto-load env var (`GOOGLE_GENERATIVE_AI_API_KEY`) different from this project's existing `GEMINI_API_KEY`. Don't add a second, differently-named copy of the same secret: Stagehand's `model` config also accepts an explicit `apiKey` field (the existing stale pattern in this file already did this for OpenAI: `modelClientOptions: { apiKey: ... }`) — pass `apiKey: process.env.GEMINI_API_KEY!` directly. No new configuration.
+
+**3. `lib/stagehand.ts` — new factory, not a shared singleton.** Each research run needs its own Browserbase session, so this can't be a module-scope client instance like `lib/gemini.ts`. New `createResearchSession(): Promise<{ stagehand: Stagehand; sessionId?: string }>`.
+
+**Corrected TWICE during `/develop`, 2026-09-10 — both corrections confirmed with a real live call, not just typechecked, the same bar Features 07/08/10 already set.** This decision's own sketch above (and `library-docs.md`) assumed a v3-style Stagehand API. The actually-installed `@browserbasehq/stagehand` is **v4.1.0**, a materially different major version:
+
+1. **Constructor**: `new Stagehand({...}) + await stagehand.init()` doesn't exist in v4 — it's `await Stagehand.create({...})`, no separate `.init()` call. Confirmed against the installed package's real types (`static create(input: StagehandCreateOptions): Promise<Stagehand>`).
+2. **Session creation — the bigger finding.** The original two-step design (a separate `@browserbasehq/sdk` client calling `bb.sessions.create({ projectId, timeout })`, then Stagehand attaching via `browserbase.connect({ apiKey, sessionId })`) **fails live**: `BrowserbaseSessionError: Stagehand extension is not installed in the connected browser. The extension must be included when the Browserbase session is created.` A session created by the plain Browserbase SDK has no Stagehand extension in it, and v4 needs one to drive the browser at all. Fixed by using `browserbase.launch({ apiKey: BROWSERBASE_API_KEY })` instead — it creates the session **and** uploads/installs the required extension automatically, confirmed live end to end: a real session launch, a real `google/gemini-3.6-flash`-driven `extract()` call against `stripe.com`, a real structured JSON result back, a clean `close()`. This is simpler than the original design, not a workaround: **`@browserbasehq/sdk` is not needed at all** and was uninstalled; `lib/browserbase.ts` (this decision's own Decision 3 sketch) was never needed and is not part of the build.
+   - **One accepted behavior change, also confirmed live, not assumed:** `browserbase.launch()`'s real options schema in this version is only `{ apiKey, baseUrl }` — no `projectId` or session-timeout field (confirmed against the installed package's own runtime schema, not just its typed surface). The session's project is inferred from the API key (Browserbase's own documented default, fine for this app's single-project setup), and its timeout comes from the Browserbase project's own default rather than an explicit 120s. `BROWSERBASE_PROJECT_ID` is not consumed by this code path as a result — the real ceiling on how long a request waits is the Next.js route's own `maxDuration` (Decision 9), unchanged.
+3. **`stagehand.context` doesn't exist either** — the real accessor is `stagehand.browser.context` (`stagehand.browser` is a getter returning `StagehandBrowser`, which carries `context: BrowserContext`, `.newPage(url)`, `.activePage()`).
+4. **`extract()`'s schema argument is the second positional parameter**, `stagehand.extract(instruction, schema, options?)`, not a `{ instruction, schema }` object (confirmed against both the installed package's real overload — `extract<Schema extends z.ZodType>(instruction, schema, options?): Promise<ExtractResult<Schema>>` — and the current `docs.stagehand.dev/v4` documentation, not the `/v3` URL an earlier web check during `/architect` happened to land on).
+5. **A real cross-package type friction, not a functional bug:** the installed `@browserbasehq/stagehand` pins its own `zod` (`4.4.3`), distinct from this project's own `zod` (`4.5.4`) — two structurally identical but nominally different packages, so TypeScript can't unify their `ZodType` branding across the boundary. Resolved with a narrow, explicit cast at the call site (`agent/research.ts`'s `forStagehandSchema()`) rather than pinning a shared zod version across two independently-versioned packages — both are plain zod v4 objects and interoperate correctly at runtime (confirmed by the same live extract() call above actually returning correctly-shaped data).
+
+Final, live-confirmed shape: `browserbase.launch({ apiKey: BROWSERBASE_API_KEY })` → `Stagehand.create({ browser, model: { modelName: "google/gemini-3.6-flash", apiKey: GEMINI_API_KEY }, logging: { level: "off" } })` (`logging: { level: "off" }` replaces the old, no-longer-existing `disablePino: true`). Centralizes the model config in one `lib/` file per the System Boundaries rule ("third party client initialisation... only").
+
+**4. Homepage URL resolution — `lib/safe-fetch.ts` (new), implementing `build-plan.md`'s SSRF guard exactly, with the one implementation detail its prose left open closed here.** New `resolveEmployerHomepageUrl(redirectUrl: string, companyName: string): Promise<string>` — never throws, always returns a URL (either the resolved real homepage or the `https://www.{cleanName}.com` fallback), matching this project's "always degrade gracefully" invariant. Implements `build-plan.md`'s hop-by-hop manual redirect follow (`fetch(url, { redirect: "manual" })`, capped at 5 hops) and IP-range validation (loopback, link-local including the cloud metadata address, private ranges, other reserved ranges) exactly as specified there — reuse that spec verbatim, don't re-derive it.
+   - **The one gap build-plan.md's prose left open ("perform the actual request against the resolved IP you validated") is now concrete**: use `dns.promises.lookup(hostname, { all: true })` and reject the hop if **any** resolved address (not just the first) falls in a blocked range — a hostname can resolve to multiple IPs, some public and some not. Re-run this same lookup-and-validate step **immediately before** issuing each hop's actual `fetch()` call (not once, cached, at the top of the loop) — this is build-plan.md's own "re-check immediately before connecting" instruction, and it's what this decision adopts as the concrete mechanism, not a hardened DNS-pinned socket. **This leaves a small, accepted residual window** (the interval between the re-check and the actual TCP connect) where a DNS answer could theoretically still change — a real but genuinely low-probability gap for this feature's threat model (Adzuna listings, not arbitrary anonymous input), documented here as a limitation rather than solved with connection-level IP pinning, matching this project's established "documented limitation, not a bug" precedent (Feature 10's country detection, Feature 04's storage isolation gap). Revisit only if this feature ever accepts a URL from a less-trusted source than an Adzuna listing.
+   - Company name cleaning for the fallback path reuses the existing regex below (`Inc.`/`LLC`/`Ltd.`/`Corp.`/`Co.` suffix strip, lowercase, strip whitespace). **Bug found and fixed via live testing during `/develop`, 2026-09-10**: the original pattern only consumed whitespace before the suffix, so `"Stripe, Inc."` (a comma before the space) cleaned to `"stripe,"` — a stray comma survives into the fallback URL (`https://www.stripe,.com`). Fixed to also consume an optional comma (`\s*,?\s*(Inc\.?|...)`); re-verified live afterward: `"Stripe, Inc."` → `https://www.stripe.com`.
+   - **Live-verified end to end, not just unit-reasoned**: a real redirect chain (via a deterministic redirector) correctly resolved down to the real root domain and stripped a subdomain; a URL pointed at a loopback address and at the cloud metadata address (`169.254.169.254`) both correctly fell back to the company-name guess without ever being fetched; a plain non-redirecting HTTPS URL passed through unchanged.
+   - `agent/research.ts` calls this one function and gets back a homepage URL; it never sees the hop-by-hop logic directly.
+   - **Named explicitly (cross-check finding): `redirectUrl` comes from `jobs.source_url`** — "Original job listing URL" per the schema, and the actual Adzuna `redirect_url` value at insert time (`app/api/agent/find/route.ts`). `jobs.external_apply_url` holds the same value today but is documented separately ("Direct company apply URL") and isn't guaranteed to stay identical — `source_url` is the one to read here, not `external_apply_url`.
+
+**4a. Sub-page selection rule, made concrete (cross-check finding — build-plan.md's "prefer about/blog/engineering/product over careers" is a preference, not an algorithm).** `pageLinks` (from the homepage `extract()`, Decision above) can return more than 3 links, duplicates, several of the same `kind`, or none of the preferred kinds — nothing in build-plan.md says how that reduces to the 3 actually-visited pages. Fixed priority order: `about` → `blog` → `engineering` → `product` → `team` → `other`, then `careers` last. Dedupe by resolved URL (case-insensitive, trailing slash ignored) before ranking. Take the first 3 in that priority order; only fall back to `careers` if fewer than 3 non-`careers` links exist at all. Deterministic and stated once, rather than left to whoever writes `agent/research.ts` to guess.
+
+**5. Live-confirmed schema blocker, found by querying this project's actual InsForge backend, not assumed from architecture.md's prose: `agent_logs.run_id` is `NOT NULL`.** `architecture.md`'s own existing text already states company research "runs standalone... outside any `agent_run`, so it has none to attach a log to" — but as the schema actually stands, that means **company research cannot write to `agent_logs` at all**; every insert with `run_id: null` would violate the constraint. Confirmed live via `get-table-schema` (`agent_logs.run_id`: `isNullable: "NO"`, FK into `agent_runs(id)` `ON DELETE CASCADE`).
+   - **Decision, confirmed with the engineer: migrate `agent_logs.run_id` to nullable.** New migration: `ALTER TABLE agent_logs ALTER COLUMN run_id DROP NOT NULL;` plus `ALTER TABLE agent_logs ADD CONSTRAINT agent_logs_run_id_or_job_id_check CHECK (run_id IS NOT NULL OR job_id IS NOT NULL);` — a row can never be anchored to neither (mirrors Feature 04's own "tie the nullable FK to a CHECK" pattern for `jobs.source`/`run_id`). **Not chosen**: reusing `agent_runs` with a synthetic row per research call — rejected because `agent_runs.job_title_searched` is itself `NOT NULL` and job-search-specific (confirmed live, same schema check); writing a placeholder into a column literally named "job title searched" for an operation that isn't a job search risks a future dashboard/activity feature (Feature 15/16) misreading it as a real search term.
+   - **`logAgentError()`'s signature widens, not replaces.** Feature 10's `logAgentError(userId: string, runId: string, jobId: string | null, message: string, error: unknown)` becomes `logAgentError(userId: string, runId: string | null, jobId: string | null, message: string, error: unknown)`. Every existing Feature 10 call site is unaffected (they already always pass a real run id — a non-null string is still a valid `string | null`). Company research calls it as `logAgentError(userId, null, jobId, message, error)`.
+   - **Fixes a real, backwards-argument bug already sitting in `library-docs.md`'s own Stagehand example**, corrected as part of this pass (see the doc corrections below): `logAgentError(userId, jobId, null, "Company research failed", error)` was passing `jobId` into the `runId` slot and `null` into the `jobId` slot — exactly backwards from Feature 10's ratified signature, presumably written before that signature existed and never reconciled. Corrected to `logAgentError(userId, null, jobId, "Company research failed", error)`.
+
+**6. Data model — no other new columns beyond Decision 5's `agent_logs` fix.** `jobs.company_research` (jsonb) and `jobs.company_researched_at` (timestamptz, nullable) were assumed to already exist from Feature 04/the Feature 12 note. **Corrected live during `/develop`, 2026-09-10**: `company_researched_at` had never actually been applied to the live database — see the correction note under Feature 04's own decision above for the full story and the live fix (`ALTER TABLE jobs ADD COLUMN company_researched_at timestamptz;`, reconfirmed via `get-table-schema`). This feature writes to those two columns, plus the `agent_logs` migration in Decision 5. No new table.
+
+**7. Re-run policy — always allowed, overwrites, confirmed directly with the engineer.** The "Research Company" button stays enabled once a dossier exists (no separate "already researched" disabled/hidden state) — clicking it again re-runs the full flow and replaces the dossier. **One case this needs to get right, not covered by "always overwrites" alone: a failed re-run must not blank out a perfectly good existing dossier.** `jobs.company_research`/`company_researched_at` are only written **after** synthesis succeeds — a failed run (Decision 10) leaves whatever was already stored (empty, or a previous dossier) completely untouched and returns an error to the client; the client's own state simply reverts to what it was rendering before the click, plus an inline error.
+
+**8. Dossier synthesis reuses `lib/gemini.ts`'s existing client — no new client, no new library.** `gemini-3.6-flash`, `responseJsonSchema` derived via `z.toJSONSchema()` from one new `lib/company-research-schema.ts` (the same "one schema, not two hand-copies" rule the Gemini docs already state) exporting `companyResearchSchema` (the 9-field shape `build-plan.md` already specifies exactly) and `export type CompanyResearchDossier = z.infer<typeof companyResearchSchema>` — re-exported from `types/index.ts` since both `agent/research.ts` (backend) and `components/job-details/CompanyResearch.tsx` (frontend render) need it, the "promote to `types/index.ts` on a second real consumer" precedent this project has followed since Feature 09/10. Temperature `0.4` (`build-plan.md`'s own number — natural but grounded, matching this project's resume-generation convention for content with genuine synthesis, not deterministic extraction/scoring). `maxOutputTokens: 8000` (reused, not re-derived — Features 07/08/10's own live-verified number for `gemini-3.6-flash`'s thinking-token budget). Wrapped in `withGeminiRetry()` (`lib/gemini.ts`) — same transient-`503` handling as Feature 10's matcher call, not re-invented.
+
+**9. Execution model — single blocking API route, confirmed directly with the engineer over a background-queue or poll-based alternative.** `POST /api/agent/research` stays open for the whole run (homepage extract → up to 3 sub-page extracts → session close → Gemini synthesis) and returns once it's actually done — no new infra (a queue, a status-polling column), matching this project's existing single-Browserbase-session design. **This corrects, not follows, `library-docs.md`'s current Browserbase caveat** ("do not add `maxDuration`... session continues running independently"): that line is really about not coupling the *Next.js function's* lifetime to the *Browserbase session's own* lifetime as if extending one automatically protects the other — it does not mean a route that synchronously drives `act()`/`extract()` calls needs no timeout headroom of its own. Under the execution model actually chosen here, the route needs to stay alive for the full round trip, so `app/api/agent/research/route.ts` exports `export const maxDuration = 180;` (3 minutes — the 120s Browserbase session budget plus headroom for the synthesis call that runs after the browser closes). **Flagged, not resolved here**: whether the actual deployment target (InsForge hosting, not assumed to be Vercel) honors `maxDuration` at all, or has a lower hard cap — this needs checking once the feature is actually deployed, not guessed now (Follow-up).
+
+**10. Failure handling — one whole-run failure mode, not per-step.** Every individual browser step already degrades gracefully by design (`build-plan.md`: empty homepage extraction → skip straight to synthesis with job + profile alone; a failed `act()`/sub-page `extract()` → logged, continue with whatever was already gathered — this project's existing "never let one Stagehand step crash the run" invariant, unchanged). The one real failure this feature can still hit outright is **the Gemini synthesis call itself failing** (quota, timeout, a `503` `withGeminiRetry()` couldn't recover, a schema-invalid response) — since nothing before that point is ever fatal, the browser only ever produces "thin" input, never a hard error. On that failure: log via `logAgentError(userId, null, jobId, "Company research failed", error)` (Decision 5), return a generic message to the client ("Couldn't research this company right now. Please try again.") at `502` (an upstream-service failure, matching Feature 10's status-code convention), leave `jobs.company_research`/`company_researched_at` untouched (Decision 7).
+
+**11. HTTP status codes, named explicitly.** `401` — no session (Decision 12). `400` — missing/empty `jobId` in the request body. `404` — `jobId` doesn't resolve to a job owned by the current user (Decision 12's ownership check) — never leak whether a job exists for someone else, same precedent as Feature 12's `notFound()` for another user's job id. `502` — the Gemini synthesis call fails outright (Decision 10). `500` — reserved for a genuinely unexpected internal error (the `jobs` update itself failing after a successful synthesis).
+
+**12. Auth and ownership — this route is its own gate, `proxy.ts` doesn't cover it.** Same precedent as Feature 10's Decision 10: `proxy.ts`'s `PROTECTED_ROUTES` list doesn't include `/api/*`, so `POST /api/agent/research`'s own `createInsforgeServer()` + `getCurrentUser()` check is the only thing stopping an unauthenticated call (`401`). The job lookup is scoped in the same query as the ownership check — `insforge.database.from("jobs").select("*").eq("id", jobId).eq("user_id", user.id).maybeSingle()` — a `null` result means "doesn't exist, or isn't yours," both rendered as `404` (Decision 11), never distinguished to the caller.
+
+**13. API surface.** `POST /api/agent/research`, body `{ jobId: string }`. Success: `{ success: true, data: { dossier: CompanyResearchDossier } }`. Failure: `{ success: false, error: string }` at the status codes in Decision 11. The route also does `revalidatePath` on the job detail page path so the Server Component re-renders with the freshly saved dossier — same pattern as Feature 10's Decision 8.
+
+**14. PostHog — `company_researched` fires once per successful run, including a re-run.** `{ userId, jobId, company }`, matching `code-standards.md`'s existing six-event list exactly (this event was already on it, unused until now). One `createPostHogServer()` per request, `await posthog.shutdown()` on every return path — same "always use and shutdown in the same function" rule as every prior feature's server-side event.
+
+**15. UI — loading state is a simulated step sequence, not a real backend-synced one; this is a deliberate tradeoff, stated plainly rather than left implicit.** The engineer picked step-progress copy ("Visiting homepage… Analyzing… Synthesizing…") together with the single-blocking-route execution model (Decision 9) — those two don't compose for free: a blocking route with no streaming response or status-polling channel gives the client no real signal about which phase is actually running. `CompanyResearch.tsx` (now a Client Component, Decision 17) cycles through three fixed labels on a timer (`~4s` per step) while the one `fetch()` is in flight, holding on the last label ("Synthesizing your dossier…") for however long the request actually takes past that point, rather than claiming to track real server state it has no way to observe. Documented here so this reads as an intentional, inspectable choice, not an accidental mismatch between two independently-made decisions.
+
+**16. UI — populated dossier renders as stacked sections in the same card chrome as the empty state, not tabs or an accordion.** No design mock covers this state (`ui-registry.md`'s existing `CompanyResearch` entry only specs the empty state). Render all 9 fields from `build-plan.md`'s Job Details UI list top to bottom inside the existing card: Company Overview (paragraph) → Tech Stack (tag list, reusing the existing skill-tag visual pattern from the Match Score section) → Culture (bullet list) → Why This Role (paragraph) → Your Edge (bullet list) → Gaps to Address (bullet list) → Smart Questions (bullet list) → Interview Prep (bullet list) → Sources (small text, links). Kept as one flowing stack rather than tabs/accordion — simpler, no interaction state to manage, and matches this project's general preference for plain stacked content over interactive chrome elsewhere on this page (Match Score, Job Description are both plain stacks too).
+
+**17. `CompanyResearch.tsx` becomes a Client Component — a necessary, not incidental, change from Feature 12's build.** Feature 12 shipped it as a Server Component with an "intentionally inert" button (`ui-registry.md`'s own words) specifically because Feature 13 didn't exist yet. It now takes an `initialDossier: CompanyResearchDossier | null` prop (Decision 17a) to seed its local state (`status: "idle" | "loading" | "error"`, the current dossier if any) and an `onClick` handler: `POST /api/agent/research` with `{ jobId }`, cycles the Decision 15 step labels while pending, on success sets the returned dossier into local state (renders immediately, no page reload needed) and calls `router.refresh()` (`next/navigation`) so the Server Component tree also picks up the persisted row on next natural revalidation — same belt-and-suspenders pattern Feature 10's Decision 11 used. On failure, shows an inline error message (`text-error` token, matching every other inline error in this app) without touching whatever dossier was already displayed (Decision 7).
+
+**17a. A saved dossier must survive a fresh page load — closed here, not left to the build (cross-check finding: nothing previously named this value's source).** Today, `app/find-jobs/[id]/page.tsx`'s column select, `lib/job-transform.ts`'s `fromJobDetailRow`, and `types/index.ts`'s `JobDetail` all explicitly omit `company_research`/`company_researched_at` (the type's own comment defers this to "whichever feature owns shaping and displaying a populated dossier" — that's this one). Without this fix, reloading the job details page after a successful research run would show the empty state again despite the DB already holding the dossier. Fix: add both columns to `page.tsx`'s `.select()`, add `companyResearch: CompanyResearchDossier | null` and `companyResearchedAt: string | null` to `JobDetailRow`/`JobDetail`, map them in `fromJobDetailRow`, and pass `initialDossier={job.companyResearch}` into `CompanyResearch.tsx` from the page.
+
+**18. Package installation — deferred to `/develop`, not installed as part of this decision.** Matches this project's established division: `/architect` decides, `/develop` installs and builds. **Correction (cross-check finding): `@browserbasehq/sdk` and `@browserbasehq/stagehand` are already on `code-standards.md`'s Approved dependencies list** (added when the Stack table first named Browserbase/Stagehand, before either feature was built) — only the actual `npm install` and the resulting `package.json` entries are net-new here, not a doc addition.
+
+**19. Configuration — nothing new.** `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID`, `GEMINI_API_KEY` are already provisioned (confirmed present in `.env.local`) and already in `code-standards.md`'s environment table from earlier features. `OPENAI_API_KEY` is deliberately never added (Decision 1).
+
+**20. Implementation skills — none installed for this feature.** Confirmed this session: no `/browser` or `/fetch` skill exists in `.claude/skills/`, and `integration-nextjs-app-router` (despite its name) is a PostHog skill, not a browser one. No Browserbase/Stagehand MCP server is configured in `.mcp.json`. This feature is built directly against `library-docs.md` (corrected below) and Stagehand's official docs, with no installed skill to defer to — flagged in Follow-up as a candidate for a future `/audit` pass if Browserbase/Stagehand skills become available.
+
+### Doc corrections (applied as part of this pass)
+
+- **`library-docs.md`**: remove the dangling "Replace the existing Stagehand 'Company Research Pattern' section... with this:" editorial artifact sitting mid-file (leftover unexecuted edit instruction, not documentation). Correct the Stagehand init snippet and the Company Research Pattern's synthesis call from OpenAI/GPT-4o to Gemini per Decisions 2-3 and 8. Fix the backwards `logAgentError()` call in the `act()` example (Decision 5). Correct the Browserbase "do not add `maxDuration`" caveat per Decision 9. Update the `## Gemini` scope note and `## OpenAI GPT-4o` section's framing — Feature 13 is now decided (Gemini), only Feature 17 remains pending.
+- **`architecture.md`** (this file, applied alongside this section): Stack table's Feature 13/17 note narrows to "Feature 17 still pending." `agent/research.ts`'s folder-structure comment drops "GPT-4o"/"provider TBD." **All three** Data Flow diagrams' provider mentions are corrected while this section is already being edited (cross-check finding — not just the Company Research one this decision directly touches): Job Discovery's "GPT-4o scores each job" (stale since Feature 10's own Gemini decision) and Resume Operations' "GPT-4o processes content" (stale since Feature 08's) both say Gemini now too, alongside Company Research. The Invariants line says Gemini, not GPT-4o. The stale `## Company Research Pattern` illustrative code block (OpenAI model config, old `stagehand.page` API, the 2-argument `logAgentError` call, the naive un-guarded homepage URL construction) is replaced with the corrected pattern per Decisions 2-5. The `jobs` table's `match_reason` column note ("GPT-4o explanation," predating Feature 10's own Gemini correction) is fixed to say Gemini while this table is already being edited for the `company_research`/`company_researched_at` rows.
+- **`build-plan.md`**: Feature 13's entry is otherwise accurate and stays as the source of truth for the SSRF guard, extraction schemas, and dossier shape — only its "GPT-4o" mentions are corrected to Gemini.
+- **`ui-registry.md`**: `CompanyResearch` entry updated — the button is no longer "intentionally inert"; add the loading (Decision 15) and populated (Decision 16) states, note the `initialDossier` prop (Decision 17a), and note the component is now a Client Component.
+- **`code-standards.md`** (cross-check finding — missing from the original correction list): the Environment Variables table's `OPENAI_API_KEY` row currently reads "Not currently used... Features 10/13/17 (not yet built) will use it instead of GPT-4o when built" — strike "13" now that Decision 1 rules it out permanently for this feature, leaving only 17 as a pending reconsideration. `@browserbasehq/sdk`/`@browserbasehq/stagehand` need no addition to the Approved dependencies list — both are already on it (cross-check confirmed) — only their actual `npm install` is new (Decision 18).
+
+### Build plan for `/develop`
+
+1. Migration (via `run-raw-sql`): `agent_logs.run_id` → nullable, plus the `run_id IS NOT NULL OR job_id IS NOT NULL` check constraint (Decision 5).
+2. `lib/agent-logs.ts` — widen `logAgentError`'s `runId` param to `string | null` (Decision 5). No behavior change for existing Feature 10 call sites.
+3. `lib/company-research-schema.ts` (new) — `companyResearchSchema`, `CompanyResearchDossier` type (Decision 8).
+4. `lib/safe-fetch.ts` (new) — `resolveEmployerHomepageUrl()` per Decision 4.
+5. ~~`lib/browserbase.ts`~~ — **not built** (Decision 3's live-verified correction: `browserbase.launch()` creates the session itself, no separate `@browserbasehq/sdk` client needed).
+6. `lib/stagehand.ts` (new) — `createResearchSession()` per Decision 3's corrected, live-verified shape.
+7. `agent/research.ts` (new) — ties it together: loads the job + profile from DB, resolves the homepage URL (4), opens the session (3), runs homepage + up to 3 sub-page `extract()` calls per `build-plan.md`'s schemas (closing the session in a `finally`, never left open even on failure), calls Gemini synthesis (8) wrapped in `withGeminiRetry()`, `logAgentError()` on outright failure (5, 10) with no DB write, otherwise updates `jobs.company_research`/`company_researched_at` (7).
+8. `app/api/agent/research/route.ts` (new) — `POST` handler per Decisions 11-14: auth (12), body validation, ownership-scoped job lookup (12), calls `agent/research.ts`, `revalidatePath`, PostHog event (14), `export const maxDuration = 180` (9).
+9. `types/index.ts` — re-export `CompanyResearchDossier`; add `companyResearch`/`companyResearchedAt` to `JobDetail` (Decisions 8, 17a).
+10. `lib/job-transform.ts` — add `companyResearch`/`companyResearchedAt` to `JobDetailRow`, map them in `fromJobDetailRow` (Decision 17a).
+11. `app/find-jobs/[id]/page.tsx` — add `company_research`/`company_researched_at` to the `.select()`, pass `initialDossier={job.companyResearch}` to `CompanyResearch` (Decision 17a).
+12. `components/job-details/CompanyResearch.tsx` — becomes `"use client"`, takes `initialDossier` prop, wired per Decisions 15-17: fetch handler, step-progress loading state, populated dossier render (16), inline error state that never clobbers an existing dossier.
+13. `package.json` — add `@browserbasehq/stagehand` only (Decision 18/Decision 3's correction: `@browserbasehq/sdk` was installed, found unnecessary once `browserbase.launch()`'s live behavior was confirmed, and uninstalled again in the same pass).
+14. `context/library-docs.md`, `context/architecture.md`, `context/build-plan.md`, `context/ui-registry.md`, `context/code-standards.md` — doc corrections above, applied in this same pass.
+
+### Verify (once built)
+
+- [x] **Live-confirmed during `/develop`, 2026-09-10**: Stagehand accepts `google/gemini-3.6-flash`, drives a real Browserbase session (launched via `browserbase.launch()`), and returns valid structured JSON from a schema-based `extract()` call against a real page — see Decision 3's corrections.
+- [x] **Live-confirmed during `/develop`, 2026-09-10**: the SSRF guard (`lib/safe-fetch.ts`) correctly follows a real redirect chain down to its root domain, correctly falls back (never fetches) on a loopback address and on the cloud metadata address, and passes through a plain non-redirecting URL unchanged. A real bug found in the process (a stray comma from `"Stripe, Inc."`-style names) was fixed and re-verified — see Decision 4.
+- [ ] Research a real, well-known company with a working public site through the actual running app → dossier renders all 9 fields, `jobs.company_research`/`company_researched_at` populated, `company_researched` PostHog event fires once. (The Stagehand/Gemini/SSRF mechanics above are now live-confirmed in isolation; this is the full route-to-UI path, which still needs a real click-through — same sandbox limitation as every prior feature.)
+- [ ] **Reload the job details page (or open it in a new tab) after a successful research run** → the dossier renders immediately from `initialDossier`, not the empty state (Decision 17a) — this is the case the cross-check pass caught as untested by the same-session-only flow.
+- [ ] Re-run research on the same job → dossier is replaced (Decision 7), no duplicate rows, no error.
+- [ ] Research a company whose site can't be resolved (a fabricated/garbage company name) → synthesis still runs from job + profile alone, a dossier still saves (never empty per the standing invariant).
+- [ ] Force the Gemini synthesis call to fail (e.g. a temporarily invalid key) → generic `502` error, `agent_logs` gets a real row with `run_id: null`, `job_id` set (Decision 5), and the job's existing `company_research` (if any) is untouched (Decision 7/10).
+- [ ] Confirm `/api/agent/research` rejects a request with no valid session (`401`), and a `jobId` belonging to another user (`404`, not `403` — never confirms the job exists).
+- [x] `npx tsc --noEmit`, `npm run lint`, `npm run build` all clean (verified during `/develop`, 2026-09-10, including after the `browserbase.launch()` correction and the comma-bug fix).
+
+### Follow-up
+
+- [ ] **Confirm `maxDuration` is actually honored by this project's real deployment target** (InsForge hosting — not assumed to be Vercel), and what the real hard cap is if any — Decision 9 chose 180s from Browserbase's own documented session budget, not from a confirmed platform limit.
+- [x] ~~Whether Stagehand's Gemini usage draws from the same quota as this project's own `lib/gemini.ts` calls~~ — **resolved**: yes, confirmed live (Decision 2) — the same `GEMINI_API_KEY` is passed explicitly into Stagehand's model config, so it draws on the same Google AI Studio quota. The shared free-tier quota (20 requests/day per model, flagged since Feature 07) is now touched by a fourth feature, and by an agent whose exact per-run call count (Stagehand's own internal `act()`/`extract()` usage) isn't precisely bounded the way this project's own direct `generateContent()` calls are — worth watching in practice, not just at build time.
+- [ ] The DNS-rebinding residual window in Decision 4 (re-check-immediately-before-connect, not full connection-level IP pinning) — revisit only if this feature's trust model changes (e.g. accepting a URL from a source less controlled than an Adzuna listing).
+- [ ] No Browserbase/Stagehand Agent Skill or MCP server exists yet (Decision 20) — worth a `/audit` pass to check again once this feature is actually being built, in case one becomes available.
+- [ ] **Cross-check finding, latent not active**: the new `agent_logs` CHECK constraint (Decision 5: `run_id IS NOT NULL OR job_id IS NOT NULL`) can conflict with `agent_logs.job_id`'s existing `ON DELETE SET NULL` — deleting a `jobs` row would null out a company-research log's only remaining anchor (`run_id` already null) and fail the CHECK, aborting the delete. No code path deletes a `jobs` row anywhere in this codebase today (verified: no `actions/jobs.ts`, no `.delete()` call on `jobs`), so this doesn't bite yet — but whoever builds a future job-deletion feature needs to know about this interaction before it does.
+- [ ] **New, found during `/develop`**: `browserbase.launch()` gives no explicit control over which Browserbase project a session bills to or its timeout (Decision 3's accepted behavior change) — revisit if this app ever needs multiple Browserbase projects, or if the account-level default session timeout proves too short/long in practice.
+
+### References
+
+- Stagehand model configuration and Gemini/Google provider support: `docs.stagehand.dev/v3/configuration/models`, `docs.stagehand.dev/v3/basics/extract` (checked live, 2026-09-10).

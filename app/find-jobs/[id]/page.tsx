@@ -20,9 +20,10 @@ type Props = {
 
 // 4. Component
 // Feature 12 — job data is already fully available from Phase 3's schema
-// (architecture.md's jobs table), so it's wired to real data immediately;
-// the Company Research card only ever renders its empty state here
-// (build-plan.md) — Feature 13 owns the populated dossier view.
+// (architecture.md's jobs table), so it's wired to real data immediately.
+// Feature 13 added company_research/company_researched_at to the select so
+// a saved dossier survives a fresh page load (architecture.md's Feature 13
+// decision, Decision 17a) — not just the same-session click flow.
 export default async function JobDetailsPage({ params }: Props) {
   const { id } = await params;
 
@@ -40,7 +41,7 @@ export default async function JobDetailsPage({ params }: Props) {
   const { data: jobRow, error } = await insforge.database
     .from("jobs")
     .select(
-      "id, title, company, location, salary, job_type, found_at, about_role, match_score, match_reason, matched_skills, missing_skills, external_apply_url",
+      "id, title, company, location, salary, job_type, found_at, about_role, match_score, match_reason, matched_skills, missing_skills, external_apply_url, company_research, company_researched_at",
     )
     .eq("id", id)
     .eq("user_id", user.id)
@@ -72,7 +73,7 @@ export default async function JobDetailsPage({ params }: Props) {
         <JobInfo job={job} />
         <MatchScore matchReason={job.matchReason} matchedSkills={job.matchedSkills} missingSkills={job.missingSkills} />
         <JobDescription aboutRole={job.aboutRole} externalApplyUrl={job.externalApplyUrl} />
-        <CompanyResearch company={job.company} />
+        <CompanyResearch jobId={job.id} company={job.company} initialDossier={job.companyResearch} />
         <JobActions company={job.company} externalApplyUrl={job.externalApplyUrl} />
       </main>
     </>

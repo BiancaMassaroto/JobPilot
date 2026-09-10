@@ -253,10 +253,10 @@ All environment variables defined in `.env.local` for development. Never hardcod
 | `NEXT_PUBLIC_INSFORGE_URL`      | lib/insforge-client.ts |
 | `NEXT_PUBLIC_INSFORGE_ANON_KEY` | lib/insforge-client.ts |
 | `NEXT_PUBLIC_APP_URL`           | actions/auth.ts — required HTTP(S) origin for OAuth `redirectTo` outside local development; a loopback `Host` fallback is allowed only in `NODE_ENV=development`. |
-| `BROWSERBASE_API_KEY`           | lib/browserbase.ts     |
-| `BROWSERBASE_PROJECT_ID`        | lib/browserbase.ts     |
-| `OPENAI_API_KEY`                | Not currently used — the project switched to Gemini for every AI feature (see architecture.md's Feature 08 decision, item 1); Features 10/13/17 (not yet built) will use it instead of GPT-4o when built |
-| `GEMINI_API_KEY`                | lib/gemini.ts — every AI feature project-wide (Feature 07 extraction, Feature 08 resume generation, and Features 10/13/17 when built) |
+| `BROWSERBASE_API_KEY`           | lib/stagehand.ts (`lib/browserbase.ts` was never built — see the `@browserbasehq/stagehand` dependency note above) |
+| `BROWSERBASE_PROJECT_ID`        | Not consumed by `lib/stagehand.ts` — `browserbase.launch()`'s real options in the installed version are only `{ apiKey, baseUrl }`; the session's project is inferred from the API key instead (confirmed live, Feature 13's `/develop` pass, 2026-09-10). Kept provisioned in case a future Browserbase API surface exposes explicit project selection. |
+| `OPENAI_API_KEY`                | Not currently used, and deliberately never added — the project switched to Gemini for every AI feature (see architecture.md's Feature 08 decision, item 1). Features 10 and 13 have both since confirmed the same switch in their own `/architect` passes; only Feature 17 (not yet built) still leaves this open for reconsideration. |
+| `GEMINI_API_KEY`                | lib/gemini.ts, lib/stagehand.ts — every AI feature project-wide (Feature 07 extraction, Feature 08 resume generation, Feature 10 job match scoring, Feature 13 company research synthesis + Stagehand's own driving model — passed explicitly as Stagehand's `model.apiKey`, not via its `GOOGLE_GENERATIVE_AI_API_KEY` auto-load) |
 | `ADZUNA_APP_ID`                 | lib/adzuna.ts          |
 | `ADZUNA_APP_KEY`                | lib/adzuna.ts          |
 | `NEXT_PUBLIC_POSTHOG_PROJECT_TOKEN` | instrumentation-client.ts, lib/posthog-server.ts |
@@ -315,8 +315,7 @@ Never install a new package without a clear reason. Before installing anything c
 Approved dependencies for this project:
 
 - `@insforge/sdk` — InsForge client (SSR helpers via its `/ssr` and `/ssr/middleware` subpaths)
-- `@browserbasehq/sdk` — Browserbase sessions
-- `@browserbasehq/stagehand` — AI browser control
+- `@browserbasehq/stagehand` — AI browser control; owns Browserbase session creation itself (`browserbase.launch()`) as of Feature 13's `/develop` pass, 2026-09-10 — `@browserbasehq/sdk` (listed here before Feature 13 was built) turned out unnecessary and was never added as a dependency; see library-docs.md's Browserbase section
 - `@google/genai` — Gemini API, this project's provider for every AI feature (Feature 07 extraction, Feature 08 resume generation, and Features 10/13/17 when built — see architecture.md's Feature 08 decision, item 1)
 - `posthog-js` — PostHog browser client
 - `posthog-node` — PostHog server client

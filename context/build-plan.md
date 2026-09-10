@@ -119,7 +119,7 @@ Wire profile form to InsForge DB.
 
 Extract from Resume button — Gemini reads uploaded PDF and auto-fills profile form fields.
 
-**Decision finalized (`/architect`, 2026-09-07)** — see `architecture.md`'s "AI Profile Extraction from Resume" section for the full rationale, including the Gemini-over-GPT-4o call (Features 08/10/13/17 still use GPT-4o until each is re-decided). Summary:
+**Decision finalized (`/architect`, 2026-09-07)** — see `architecture.md`'s "AI Profile Extraction from Resume" section for the full rationale, including the Gemini-over-GPT-4o call (Feature 17 still uses GPT-4o until it's re-decided; Features 08, 10, and 13 have all since switched to Gemini in their own `/architect` passes). Summary:
 
 **UI:**
 
@@ -261,7 +261,7 @@ Agent researches the company using their public website and builds a structured 
   - Strip subdomain from that URL's hostname (e.g. jobs.stripe.com → stripe.com)
   - Construct homepage URL as https://{rootDomain}
   - If the resolved URL still contains "adzuna.com" — fall back to https://www.{company}.com (company name from DB)
-  - If Stagehand gets no meaningful content (oneLiner and productSummary empty) — skip browser research entirely, proceed to GPT-4o synthesis with job description and profile only
+  - If Stagehand gets no meaningful content (oneLiner and productSummary empty) — skip browser research entirely, proceed to Gemini synthesis with job description and profile only (corrected from GPT-4o — see architecture.md's Feature 13 decision, 2026-09-10)
 - Open single Browserbase session with Stagehand
   **Stagehand homepage extraction:**
 
@@ -321,7 +321,7 @@ const page = await stagehand.extract({
 ```
 
 - Close Browserbase session after homepage + max 3 sub-pages
-  **GPT-4o synthesis (runs after browser closes):**
+  **Gemini synthesis (runs after browser closes; corrected from GPT-4o — see architecture.md's Feature 13 decision, 2026-09-10):**
 
 System prompt:
 
@@ -373,7 +373,7 @@ Temperature: 0.4
 ```
 
 - Save complete dossier to jobs.company_research jsonb column, and set jobs.company_researched_at = now() in the same update (the activity timestamp Feature 16's Recent Activity merge reads — see architecture.md)
-- Always return a dossier — never fail silently. If browser research failed, GPT-4o synthesizes from job description and profile alone.
+- Always return a dossier — never fail silently. If browser research failed, Gemini synthesizes from job description and profile alone.
   **PostHog event:** `company_researched` — { userId, jobId, company }
 
 ---

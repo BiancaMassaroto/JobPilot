@@ -1,3 +1,11 @@
+// Imported (and re-exported below) per this project's "promote to
+// types/index.ts on a second real consumer" precedent (Feature 09/10) —
+// agent/research.ts (backend) and CompanyResearch.tsx (frontend render)
+// both need it. See architecture.md's Feature 13 decision, Decision 8.
+import type { CompanyResearchDossier } from "@/lib/company-research-schema";
+
+export type { CompanyResearchDossier };
+
 export type WorkAuthorization = "citizen" | "permanent_resident" | "visa_required";
 
 export type ExperienceLevel = "student" | "junior" | "mid" | "senior" | "lead";
@@ -116,9 +124,9 @@ export type JobType = "fulltime" | "parttime" | "contract";
 // disjoint slices of the same `jobs` row, and `Job`/`fromJobRow` already
 // have a real consumer (JobsTable) that shouldn't have to carry fields it
 // never renders. Field names map onto the jobs table columns the same way
-// `Job`'s do. companyResearch is intentionally omitted — Feature 12 only
-// ever renders the Company Research card's empty state (build-plan.md),
-// Feature 13 owns shaping and displaying a populated dossier.
+// `Job`'s do. companyResearch/companyResearchedAt added at Feature 13
+// (architecture.md's Feature 13 decision, Decision 17a) — a saved dossier
+// must survive a fresh page load, not just the same-session click flow.
 export type JobDetail = {
   id: string;
   title: string;
@@ -133,6 +141,8 @@ export type JobDetail = {
   matchedSkills: string[];
   missingSkills: string[];
   externalApplyUrl: string | null;
+  companyResearch: CompanyResearchDossier | null;
+  companyResearchedAt: Date | null;
 };
 
 // POST /api/agent/find request body (architecture.md's Adzuna Job Discovery
